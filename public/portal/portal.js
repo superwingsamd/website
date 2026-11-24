@@ -702,9 +702,10 @@
 
         <form class="panel form" id="zf"><div class="bar"><h2 style="margin:0">Zoho ZeptoMail</h2>${set(s.zepto_token)}</div>
         <div class="help"><ol><li>Sign in to <a href="https://www.zoho.in/zeptomail/" target="_blank" rel="noopener">ZeptoMail</a> with the foundation's Zoho account and verify the domain <code>superwingsfoundation.org</code> (add the SPF, DKIM and CNAME records it shows to your DNS).</li>
-        <li>Open <em>Mail Agents</em>, then your agent, then <em>SMTP/API</em>, and copy the <em>Send Mail Token</em>.</li><li>Paste it below and press Save. The token is encrypted before it is stored.</li></ol></div>
-        <div class="row"><label class="f">Data centre${sel('zepto_host', [['api.zeptomail.in', 'India (zeptomail.in)'], ['api.zeptomail.com', 'Global (zeptomail.com)'], ['api.zeptomail.eu', 'Europe (zeptomail.eu)']], s.zepto_host)}</label>
-        <label class="f">Send Mail Token<input name="zepto_token" type="password" value="${esc(s.zepto_token)}" placeholder="Zoho-enczapikey …" autocomplete="off"></label></div>
+        <li>Open <em>Mail Agents</em>, then your agent, then <em>SMTP/API</em>. Under <em>Rest API</em>, copy the <strong>Host</strong> (for example <code>cpaas.zoho.in</code>) and the whole <strong>API key</strong> (it starts with <code>Zoho-enczapikey</code>). You do not need the Agent Alias.</li><li>Paste both below and press Save. The key is kept in the script's private settings, never in the Sheet.</li></ol></div>
+        <div class="row"><label class="f">Host <span class="hint">Exactly as shown under Rest API → Host, e.g. cpaas.zoho.in</span><input name="zepto_host" list="zhosts" value="${esc(s.zepto_host || 'cpaas.zoho.in')}" autocomplete="off">
+          <datalist id="zhosts"><option value="cpaas.zoho.in"><option value="api.zeptomail.in"><option value="cpaas.zoho.com"><option value="api.zeptomail.com"><option value="api.zeptomail.eu"></datalist></label>
+        <label class="f">API key<input name="zepto_token" type="password" value="${esc(s.zepto_token)}" placeholder="Zoho-enczapikey …" autocomplete="off"></label></div>
         <div class="bar"><button class="btn btn-primary sm" type="submit">Save</button><button class="btn light sm" type="button" data-test="zeptomail">Send test email</button></div></form>
 
         <form class="panel form" id="hf"><div class="bar"><h2 style="margin:0">Fallback: Zoho Mail self-client</h2>${set(s.zoho_refresh_token && s.zoho_account_id)}</div>

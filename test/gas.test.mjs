@@ -4,7 +4,7 @@ import { loadGas } from './gas-mock.mjs';
 const ROOT = new URL('..', import.meta.url).pathname;
 const sent = []; let zeptoDown = false;
 function fetchHandler(url, o) {
-  if (url.startsWith('https://api.zeptomail.in/v1.1/email')) {
+  if (/^https:\/\/(cpaas\.zoho\.in|api\.zeptomail\.in)\/v1\.1\/email$/.test(url)) {
     if (zeptoDown) return { code: 500, body: '{"error":"down"}' };
     if (!o.headers.Authorization.startsWith('Zoho-enczapikey ')) throw new Error('bad zepto header');
     const b = JSON.parse(o.payload); sent.push({ via: 'zepto', to: b.to[0].email_address.address, from: b.from.address, subject: b.subject, html: b.htmlbody });
@@ -58,13 +58,13 @@ r = call('GET', '/api/admin/dashboard', null, 'garbage-token-xxxxxxxxxxxxxxxx');
 ok(r.status === 401, 'invalid token rejected');
 
 console.log('\nSettings (secrets in Script Properties, phone kept as text)');
-r = call('PUT', '/api/admin/settings', { settings: { zepto_token: 'Zoho-enczapikey SECRET', contact_phone: '+91 99250 21383', reg_12a: 'AAA12A' } }, admin);
+r = call('PUT', '/api/admin/settings', { settings: { zepto_token: 'Zoho-enczapikey SECRETKEY1234567890ABCDEF', contact_phone: '+91 99250 21383', reg_12a: 'AAA12A' } }, admin);
 ok(r.ok, 'save settings');
-ok(props.get('zepto_token') === 'Zoho-enczapikey SECRET' && !JSON.stringify(sheet('settings').data).includes('SECRET'), 'token stored outside the sheet');
+ok(props.get('zepto_token') === 'Zoho-enczapikey SECRETKEY1234567890ABCDEF' && !JSON.stringify(sheet('settings').data).includes('SECRET'), 'token stored outside the sheet');
 r = call('GET', '/api/admin/settings', null, admin);
 ok(r.data.settings.zepto_token === '••••••' && r.data.settings.contact_phone === '+91 99250 21383', 'token masked, phone intact');
 call('PUT', '/api/admin/settings', { settings: { zepto_token: '••••••' } }, admin);
-ok(props.get('zepto_token') === 'Zoho-enczapikey SECRET', 'mask keeps token');
+ok(props.get('zepto_token') === 'Zoho-enczapikey SECRETKEY1234567890ABCDEF', 'mask keeps token');
 call('POST', '/api/admin/senders', { address: 'events@superwingsfoundation.org', name: 'Superwings Events' }, admin);
 call('POST', '/api/admin/senders', { address: 'contact@superwingsfoundation.org', name: 'Superwings Foundation', is_default: true }, admin);
 r = call('GET', '/api/admin/senders', null, admin);
@@ -229,6 +229,17 @@ r = call('POST', '/api/admin/donations/1/document', {}, admin);
 ok(/^SWF\/RC\//.test(r.data.document.ref_no) && r.data.document.data.amount === 5000, 'receipt document retrievable');
 r = call('POST', '/api/admin/documents', { type: 'hours_statement', user_id: riyaId }, coord);
 ok(r.data.document.ref_no === st1.ref_no, 'staff can open a student statement');
+
+console.log('\nZeptoMail host');
+r = call('PUT', '/api/admin/settings', { settings: { zepto_host: 'https://cpaas.zoho.in/v1.1/email' } }, admin);
+r = call('GET', '/api/admin/settings', null, admin);
+ok(r.data.settings.zepto_host === 'cpaas.zoho.in', 'host cleaned from a pasted URL');
+r = call('PUT', '/api/admin/settings', { settings: { zepto_host: 'evil.example.com' } }, admin);
+ok(!r.ok, 'non-Zoho host rejected');
+r = call('POST', '/api/admin/email/test', { to: 'a@x.org', provider: 'zeptomail' }, admin);
+ok(r.data.ok && r.data.provider === 'zeptomail', 'sends via cpaas.zoho.in');
+r = call('PUT', '/api/admin/settings', { settings: { zepto_token: 'short' } }, admin);
+ok(!r.ok && /API key/.test(r.error), 'obviously wrong key rejected');
 
 console.log('\nZoho one-time code');
 call('PUT', '/api/admin/settings', { settings: { zoho_refresh_token: '1000.pasted.code' } }, admin);

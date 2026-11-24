@@ -22,7 +22,7 @@ const DEFAULT_SETTINGS = {
   org_name: 'Superwings Foundation', contact_email: 'contact@superwingsfoundation.org', contact_phone: '+91 99250 21383',
   address: 'I-504, Safal Parivesh Flats, near Prahladnagar AUDA Garden, behind Flavours Restaurant, Satellite, Ahmedabad, Gujarat 380015',
   reg_no: 'E/23237/Ahmedabad', darpan_id: 'GJ/2025/0904643', pan: 'ABITS6749R', site_url: 'https://superwingsfoundation.org',
-  email_primary: 'zeptomail', zepto_host: 'api.zeptomail.in', zoho_dc: 'in', reminder_hours: '24', followup_hours: '3', retention_days: '7',
+  email_primary: 'zeptomail', zepto_host: 'cpaas.zoho.in', zoho_dc: 'in', reminder_hours: '24', followup_hours: '3', retention_days: '7',
 };
 const PROGRAMMES = {
   general: 'General Volunteer', university: 'University Service Learning', ibdp_cas: 'IB Diploma: CAS',
@@ -987,6 +987,12 @@ on('PUT', '/api/admin/settings', function (c) {
   const o = {}, input = c.body.settings || {};
   Object.keys(input).forEach(function (k) { if (allowed.indexOf(k) >= 0) o[k] = str(input[k], 4000); });
   if (o.email_primary) oneOf(o.email_primary, ['zeptomail', 'zoho_mail', 'gmail'], 'Primary provider');
+  if ('zepto_host' in o) {
+    const h = String(o.zepto_host).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (h && zeptoHost(h) !== h) bad('The ZeptoMail host should look like cpaas.zoho.in or api.zeptomail.in');
+    o.zepto_host = h || 'cpaas.zoho.in';
+  }
+  if (o.zepto_token && o.zepto_token !== '••••••' && !/^(Zoho-enczapikey\s+)?\S{20,}$/i.test(o.zepto_token.trim())) bad('That does not look like a ZeptoMail API key. Copy the whole "Zoho-enczapikey …" value.');
   setSettings(o);
   if ('zoho_refresh_token' in o || 'zoho_client_id' in o || 'zoho_dc' in o) CacheService.getScriptCache().remove('zoho_at');
   return { ok: true };
@@ -1088,6 +1094,11 @@ on('POST', '/api/admin/cron/run', function (c) { requireRole(c.user, LEADERS); r
 
 // ============================================================ EMAIL ENGINE
 const ZOHO_DC = { in: 'in', com: 'com', eu: 'eu', au: 'com.au', jp: 'jp' };
+// Accepts what the ZeptoMail console shows ("cpaas.zoho.in", "https://api.zeptomail.in/v1.1/email", …) and keeps only Zoho hosts.
+function zeptoHost(v) {
+  const h = String(v || 'cpaas.zoho.in').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  return /^([a-z0-9-]+\.)*(zoho|zeptomail)\.(in|com|eu|com\.au|jp|ca|sa|com\.cn)$/.test(h) ? h : 'cpaas.zoho.in';
+}
 function sendZepto(s, msg) {
   if (!s.zepto_token) throw new Error('ZeptoMail is not connected');
   const token = s.zepto_token.replace(/^Zoho-enczapikey\s+/i, '');
@@ -1095,7 +1106,7 @@ function sendZepto(s, msg) {
     to: msg.to.map(function (t) { return { email_address: { address: t.address, name: t.name || t.address } }; }) };
   if (msg.cc && msg.cc.length) body.cc = msg.cc.map(function (a) { return { email_address: { address: a } }; });
   if (msg.replyTo) body.reply_to = [{ address: msg.replyTo }];
-  const res = UrlFetchApp.fetch('https://' + (s.zepto_host || 'api.zeptomail.in') + '/v1.1/email', {
+  const res = UrlFetchApp.fetch('https://' + zeptoHost(s.zepto_host) + '/v1.1/email', {
     method: 'post', contentType: 'application/json', headers: { Authorization: 'Zoho-enczapikey ' + token, Accept: 'application/json' },
     payload: JSON.stringify(body), muteHttpExceptions: true });
   const code = res.getResponseCode();
