@@ -1027,6 +1027,12 @@ on('GET', '/api/admin/email/gmail', function (c) {
   try { account = Session.getEffectiveUser().getEmail(); } catch (e) { /* hidden */ }
   return { authorised: quota != null, quota: quota, aliases: aliases, account: account };
 });
+on('POST', '/api/admin/email/zoho-code', function (c) {
+  requireRole(c.user, LEADERS);
+  const code = str(c.body.code, 300);
+  if (!/^1000\.[0-9a-f]+\.[0-9a-f]+$/i.test(code)) bad('That does not look like a Zoho code. It should start with "1000." and contain two dots.');
+  return Object.assign({ ok: true }, zohoExchangeCode(code));
+});
 on('POST', '/api/admin/email/zoho-account', function (c) { requireRole(c.user, LEADERS); return Object.assign({ ok: true }, zohoFetchAccountId()); });
 on('POST', '/api/admin/email/test', function (c) {
   requireRole(c.user, LEADERS);
@@ -1104,9 +1110,35 @@ function zohoAccessToken(s, force) {
   const res = UrlFetchApp.fetch('https://accounts.zoho.' + dc + '/oauth/v2/token', { method: 'post', muteHttpExceptions: true,
     payload: { refresh_token: s.zoho_refresh_token, client_id: s.zoho_client_id, client_secret: s.zoho_client_secret, grant_type: 'refresh_token' } });
   let data = {}; try { data = JSON.parse(res.getContentText()); } catch (e) { /* ignore */ }
-  if (!data.access_token) throw new Error('Zoho token refresh failed: ' + (data.error || res.getResponseCode()));
+  if (!data.access_token) throw new Error('Zoho token refresh failed: ' + zohoErrorHelp(data.error || res.getResponseCode()));
   cache.put('zoho_at', data.access_token, Math.max(60, (Number(data.expires_in) || 3600) - 300));
   return data.access_token;
+}
+function zohoErrorHelp(err) {
+  const map = {
+    invalid_code: 'invalid_code. The refresh token (or code) was rejected. Usually the one-time code from "Generate Code" was pasted instead of a refresh token, the code expired, or the data centre (.in / .com) does not match where the Self Client was created. Generate a new code and use "Connect with code".',
+    invalid_client: 'invalid_client. The Client ID or Client Secret is wrong, or the data centre (.in / .com) does not match where the Self Client was created.',
+    invalid_client_secret: 'invalid_client_secret. The Client Secret is wrong.',
+    access_denied: 'access_denied. Zoho refused access. Check that the Self Client still exists.',
+  };
+  return map[err] || String(err);
+}
+/** Exchange the one-time code from Zoho's "Generate Code" step for a refresh token, then read the account ID. */
+function zohoExchangeCode(code) {
+  const s = getSettings();
+  if (!s.zoho_client_id || !s.zoho_client_secret) bad('Save the Client ID and Client Secret first');
+  const dc = ZOHO_DC[s.zoho_dc] || 'in';
+  const res = UrlFetchApp.fetch('https://accounts.zoho.' + dc + '/oauth/v2/token', { method: 'post', muteHttpExceptions: true,
+    payload: { grant_type: 'authorization_code', client_id: s.zoho_client_id, client_secret: s.zoho_client_secret, code: code } });
+  let data = {}; try { data = JSON.parse(res.getContentText()); } catch (e) { /* ignore */ }
+  if (!data.refresh_token) {
+    if (data.error === 'invalid_code') bad('Zoho says this code is invalid. Codes work once and expire after a few minutes. Generate a new one (scope ZohoMail.messages.CREATE,ZohoMail.accounts.READ) and paste it straight away. Also check the data centre matches the API Console you used (api-console.zoho.' + dc + ').');
+    bad('Zoho did not return a refresh token: ' + zohoErrorHelp(data.error || res.getResponseCode()) + (data.access_token ? ' (Tip: in the API Console choose "Generate Code", not a token, so Zoho issues a refresh token.)' : ''));
+  }
+  setSettings({ zoho_refresh_token: data.refresh_token });
+  const cache = CacheService.getScriptCache();
+  if (data.access_token) cache.put('zoho_at', data.access_token, Math.max(60, (Number(data.expires_in) || 3600) - 300)); else cache.remove('zoho_at');
+  return zohoFetchAccountId();
 }
 function zohoFetchAccountId() {
   const s = getSettings(), at = zohoAccessToken(s, true), dc = ZOHO_DC[s.zoho_dc] || 'in';

@@ -708,14 +708,18 @@
         <div class="bar"><button class="btn btn-primary sm" type="submit">Save</button><button class="btn light sm" type="button" data-test="zeptomail">Send test email</button></div></form>
 
         <form class="panel form" id="hf"><div class="bar"><h2 style="margin:0">Fallback: Zoho Mail self-client</h2>${set(s.zoho_refresh_token && s.zoho_account_id)}</div>
-        <div class="help"><ol><li>Go to the <a href="https://api-console.zoho.in/" target="_blank" rel="noopener">Zoho API Console</a> (zoho.in for India accounts) and choose <em>Add Client</em>, then <em>Self Client</em>.</li>
-        <li>Copy the <em>Client ID</em> and <em>Client Secret</em>.</li>
-        <li>Under <em>Generate Code</em>, enter the scope <code>ZohoMail.messages.CREATE,ZohoMail.accounts.READ</code>, choose 10 minutes, and generate the code.</li>
-        <li>Exchange the code for a refresh token. Run this in a terminal within 10 minutes:<br><code style="display:block;white-space:pre-wrap;margin-top:6px;padding:8px">curl -X POST "https://accounts.zoho.in/oauth/v2/token?grant_type=authorization_code&amp;client_id=CLIENT_ID&amp;client_secret=CLIENT_SECRET&amp;code=CODE"</code>Copy the <code>refresh_token</code> from the reply.</li>
-        <li>Paste the three values below, Save, then press <em>Fetch account ID</em>. Senders must be addresses that mailbox is allowed to send as.</li></ol></div>
+        <div class="help"><ol><li>Open the <a href="https://api-console.zoho.in/" target="_blank" rel="noopener">Zoho API Console</a> with the account that owns the mailbox (use api-console.zoho.<strong>in</strong> for Indian accounts, .com otherwise), then choose <em>Add Client → Self Client</em>.</li>
+        <li>Copy the <em>Client ID</em> and <em>Client Secret</em> into the boxes below, pick the matching data centre and press <strong>Save</strong>.</li>
+        <li>In the console, open <em>Generate Code</em>. Scope: <code>ZohoMail.messages.CREATE,ZohoMail.accounts.READ</code>, duration 10 minutes, any description. Click <em>Create</em> and copy the code (it starts with <code>1000.</code>).</li>
+        <li>Paste it in <strong>One-time code</strong> and press <strong>Connect with code</strong> within a few minutes. The portal swaps it for a refresh token and finds your account ID. Codes work only once; if it fails, generate a new one.</li>
+        <li>From addresses used with this fallback must belong to that Zoho mailbox (or its aliases).</li></ol></div>
         <div class="row"><label class="f">Data centre${sel('zoho_dc', [['in', 'India (zoho.in)'], ['com', 'Global (zoho.com)'], ['eu', 'Europe (zoho.eu)'], ['au', 'Australia'], ['jp', 'Japan']], s.zoho_dc)}</label>${inp('zoho_client_id', 'Client ID')}</div>
-        <div class="row"><label class="f">Client Secret<input name="zoho_client_secret" type="password" value="${esc(s.zoho_client_secret)}" autocomplete="off"></label><label class="f">Refresh token<input name="zoho_refresh_token" type="password" value="${esc(s.zoho_refresh_token)}" autocomplete="off"></label></div>
-        ${inp('zoho_account_id', 'Account ID', 'Filled in by “Fetch account ID”')}
+        <label class="f">Client Secret<input name="zoho_client_secret" type="password" value="${esc(s.zoho_client_secret)}" autocomplete="off"></label>
+        <div class="row"><label class="f">One-time code <span class="hint">From “Generate Code”, starts with 1000.</span><input id="zcode" autocomplete="off" placeholder="1000.xxxxxxxx.xxxxxxxx"></label>
+        <div style="align-self:end"><button class="btn btn-yellow sm" type="button" id="zconnect">Connect with code</button></div></div>
+        <details style="font-size:.9rem"><summary class="muted" style="cursor:pointer">Advanced: refresh token and account ID</summary><div class="form" style="margin-top:10px">
+        <label class="f">Refresh token <span class="hint">Filled in by “Connect with code”. Only paste a refresh token here, never the one-time code.</span><input name="zoho_refresh_token" type="password" value="${esc(s.zoho_refresh_token)}" autocomplete="off"></label>
+        ${inp('zoho_account_id', 'Account ID', 'Filled in automatically')}</div></details>
         <div class="bar"><button class="btn btn-primary sm" type="submit">Save</button><button class="btn light sm" type="button" id="acct">Fetch account ID</button><button class="btn light sm" type="button" data-test="zoho_mail">Send test email</button></div></form>
 
         <form class="panel form" id="gf"><div class="bar"><h2 style="margin:0">Last-resort fallback: Gmail</h2><span id="gstat"><span class="pill pending">checking…</span></span></div>
@@ -731,6 +735,13 @@
       save($('#pf')); save($('#zf')); save($('#hf'));
       bindForm($('#gf'), async (b) => { await api('/api/admin/settings', { method: 'PUT', body: { settings: { gmail_enabled: b.gmail_enabled ? '1' : '0' } } }); toast('Settings saved'); settings(main, ['email']); });
       $('#acct').onclick = () => wrap(async () => { const r = await api('/api/admin/email/zoho-account', { body: {} }); toast(`Connected: account ${r.accountId} ${r.address}`); settings(main, ['email']); });
+      $('#zconnect').onclick = () => wrap(async () => {
+        const code = $('#zcode', sb).value.trim(); if (!code) { toast('Paste the one-time code first', true); return; }
+        const f = $('#hf', sb), v = SW.formData(f);
+        await api('/api/admin/settings', { method: 'PUT', body: { settings: { zoho_dc: v.zoho_dc, zoho_client_id: v.zoho_client_id, zoho_client_secret: v.zoho_client_secret } } });
+        const r = await api('/api/admin/email/zoho-code', { body: { code } });
+        toast(`Zoho Mail connected: ${r.address || 'account ' + r.accountId}`); settings(main, ['email']);
+      });
       sb.querySelectorAll('[data-test]').forEach((b) => (b.onclick = () => wrap(async () => {
         const to = prompt('Send a test email to:', ME.email); if (!to) return;
         const r = await api('/api/admin/email/test', { body: { to, provider: b.dataset.test } });

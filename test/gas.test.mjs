@@ -10,7 +10,12 @@ function fetchHandler(url, o) {
     const b = JSON.parse(o.payload); sent.push({ via: 'zepto', to: b.to[0].email_address.address, from: b.from.address, subject: b.subject, html: b.htmlbody });
     return { code: 201, body: '{}' };
   }
-  if (url.startsWith('https://accounts.zoho.in/oauth/v2/token')) return { code: 200, body: JSON.stringify({ access_token: 'AT1', expires_in: 3600 }) };
+  if (url.startsWith('https://accounts.zoho.in/oauth/v2/token')) {
+    const pl = o.payload || {};
+    if (pl.grant_type === 'authorization_code') return pl.code === '1000.aaa.bbb' ? { code: 200, body: JSON.stringify({ access_token: 'AT1', refresh_token: 'RT_NEW', expires_in: 3600 }) } : { code: 200, body: '{"error":"invalid_code"}' };
+    if (pl.refresh_token && pl.refresh_token.startsWith('1000.')) return { code: 200, body: '{"error":"invalid_code"}' };
+    return { code: 200, body: JSON.stringify({ access_token: 'AT1', expires_in: 3600 }) };
+  }
   if (url === 'https://mail.zoho.in/api/accounts') return { code: 200, body: JSON.stringify({ data: [{ accountId: '555', primaryEmailAddress: 'contact@superwingsfoundation.org' }] }) };
   if (url.startsWith('https://mail.zoho.in/api/accounts/555/messages')) {
     const b = JSON.parse(o.payload); sent.push({ via: 'zoho', to: b.toAddress, from: b.fromAddress, subject: b.subject, html: b.content });
@@ -224,6 +229,17 @@ r = call('POST', '/api/admin/donations/1/document', {}, admin);
 ok(/^SWF\/RC\//.test(r.data.document.ref_no) && r.data.document.data.amount === 5000, 'receipt document retrievable');
 r = call('POST', '/api/admin/documents', { type: 'hours_statement', user_id: riyaId }, coord);
 ok(r.data.document.ref_no === st1.ref_no, 'staff can open a student statement');
+
+console.log('\nZoho one-time code');
+call('PUT', '/api/admin/settings', { settings: { zoho_refresh_token: '1000.pasted.code' } }, admin);
+r = call('POST', '/api/admin/email/zoho-account', {}, admin);
+ok(!r.ok && /pasted instead of a refresh token/.test(r.error), 'pasted code gives a helpful error', r.error);
+r = call('POST', '/api/admin/email/zoho-code', { code: 'hello' }, admin);
+ok(!r.ok && /start with "1000\."/.test(r.error), 'rejects non-code input');
+r = call('POST', '/api/admin/email/zoho-code', { code: '1000.dead.beef' }, admin);
+ok(!r.ok && /Codes work once|works once|work once/.test(r.error), 'expired code explained', r.error);
+r = call('POST', '/api/admin/email/zoho-code', { code: '1000.aaa.bbb' }, admin);
+ok(r.ok && r.data.accountId === '555' && props.get('zoho_refresh_token') === 'RT_NEW', 'code exchanged for refresh token + account', r);
 
 console.log('\nGmail fallback & health check');
 zeptoDown = true;
