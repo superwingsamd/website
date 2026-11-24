@@ -1,0 +1,10 @@
+{
+  "name": "superwings-foundation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --no-warnings test/gas.test.mjs",
+    "build": "node --no-warnings scripts/build.mjs",
+    "preview": "node --no-warnings test/devserver.mjs"
+  }
+}
