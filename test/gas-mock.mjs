@@ -31,12 +31,13 @@ class Sheet {
 }
 class Book {
   constructor() { this.sheets = [new Sheet('Sheet1')]; }
+  getUrl() { return 'https://docs.google.com/spreadsheets/d/mock'; } getName() { return 'Superwings DB'; } getId() { return 'mockid'; }
   getSheetByName(n) { return this.sheets.find((s) => s.name === n) || null; }
   insertSheet(n) { const s = new Sheet(n); this.sheets.push(s); return s; }
   getSheets() { return this.sheets; } deleteSheet(s) { this.sheets = this.sheets.filter((x) => x !== s); }
 }
 
-export function loadGas(file, { fetchHandler }) {
+export function loadGas(file, { fetchHandler, gmail }) {
   const book = new Book();
   const props = new Map(), cache = new Map(), files = new Map();
   const signed = (buf) => [...buf].map((b) => (b > 127 ? b - 256 : b));
@@ -67,6 +68,9 @@ export function loadGas(file, { fetchHandler }) {
       createFolder: (n) => ({ getId: () => 'folder1', name: n, createFile: (blob) => { const id = 'file' + files.size; files.set(id, blob); return { getId: () => id, setSharing() {} }; } }),
       getFolderById(id) { return this.createFolder(id); },
     },
+    MailApp: { getRemainingDailyQuota: () => (gmail ? gmail.quota : 100) },
+    GmailApp: { getAliases: () => (gmail ? gmail.aliases : []), sendEmail: (to, subject, text, opts) => { if (gmail && gmail.fail) throw new Error('gmail down'); (gmail ? gmail.sent : []).push({ to, subject, text, opts }); } },
+    Session: { getEffectiveUser: () => ({ getEmail: () => 'superwings.foundation@gmail.com' }) },
     ScriptApp: { getProjectTriggers: () => [], deleteTrigger() {}, newTrigger: () => ({ timeBased: () => ({ everyMinutes: () => ({ create() {} }) }) }) },
   };
   vm.createContext(ctx);

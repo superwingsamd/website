@@ -133,6 +133,7 @@
       document.querySelectorAll('#nav a, #mnav a[href]').forEach((a) => a.addEventListener('click', () => { if (a.getAttribute('href') === '#' + (location.hash.slice(1) || items[0][0])) { SW.clearCache(); draw(); } }));
       lastView = view;
       prog.className = 'progress on';
+      let lastErr = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         const next = Object.assign(document.createElement('main'), { className: 'main', id: 'main' });
         VIEW = next;
@@ -145,11 +146,14 @@
         } catch (e) {
           if (seq !== navSeq) return;
           if (e.status === 401) { SW.token.clear(); return loginScreen('Your session has ended. Please sign in again.'); }
-          if (e.status && e.status < 500) {
-            next.innerHTML = calm(e.status === 403 ? 'Not available for your role' : 'Not found', e.message);
+          if (!e.network) { // the server answered with a reason: show it instead of retrying
+            next.innerHTML = calm(e.status === 403 ? 'Not available for your role' : e.status === 404 ? 'Not found' : 'This section could not load', e.message, e.status >= 500);
+            const rb = next.querySelector('[data-retry]'); if (rb) rb.onclick = () => { SW.clearCache(); draw(); };
             document.getElementById('main').replaceWith(next); prog.className = 'progress';
             return;
           }
+          lastErr = e;
+          console.warn('Section load failed:', e);
           await sleep(700 * (attempt + 1));
           if (seq !== navSeq) return;
         }
@@ -157,9 +161,9 @@
       prog.className = 'progress';
       const cur = document.getElementById('main');
       if (cur.querySelector('.sk') || !cur.textContent.trim()) {
-        cur.innerHTML = calm('Still connecting…', 'The server is taking longer than usual to respond.', true);
+        cur.innerHTML = calm('Still connecting…', lastErr ? lastErr.message : 'The server is taking longer than usual to respond.', true);
         cur.querySelector('[data-retry]').onclick = draw;
-      } else toast('Could not refresh this section. Showing what was loaded last.');
+      } else toast('Could not load this section: ' + (lastErr ? lastErr.message : 'no response') + (isLead() ? ' (see Settings → System check)' : ''), true);
     };
     window.onhashchange = draw;
     draw();
@@ -566,7 +570,7 @@
   // ------------------------------------------------------------------ settings
   async function settings(main, [tab = 'organisation']) {
     const [{ settings: s }, { senders }] = await Promise.all([api('/api/admin/settings'), api('/api/admin/senders')]);
-    const T = [['organisation', 'Organisation'], ['donations', 'Donations & tax'], ['email', 'Email delivery'], ['senders', 'From addresses'], ['automation', 'Automation']];
+    const T = [['organisation', 'Organisation'], ['donations', 'Donations & tax'], ['email', 'Email delivery'], ['senders', 'From addresses'], ['automation', 'Automation'], ['health', 'System check']];
     main.innerHTML = top('Settings') + `<div class="subtabs">${T.map(([k, t]) => `<button class="${k === tab ? 'on' : ''}" onclick="location.hash='settings/${k}'">${t}</button>`).join('')}</div><div id="sb"></div>`;
     const sb = $('#sb');
     const inp = (k, label, hint = '', type = 'text') => `<label class="f">${label}${hint ? ` <span class="hint">${hint}</span>` : ''}<input type="${type}" name="${k}" value="${esc(s[k] ?? '')}"></label>`;
@@ -593,8 +597,10 @@
     if (tab === 'email') {
       const set = (v) => (v ? '<span class="pill approved">connected</span>' : '<span class="pill pending">not connected</span>');
       sb.innerHTML = `<form class="panel form" id="pf"><h2>Which service sends email first?</h2>
-        <label class="check"><input type="radio" name="email_primary" value="zeptomail" ${s.email_primary !== 'zoho_mail' ? 'checked' : ''}><span><strong>ZeptoMail</strong> (recommended for transactional email), with the Zoho Mail self-client as fallback</span></label>
-        <label class="check"><input type="radio" name="email_primary" value="zoho_mail" ${s.email_primary === 'zoho_mail' ? 'checked' : ''}><span><strong>Zoho Mail self-client</strong> first, with ZeptoMail as fallback</span></label>
+        <label class="check"><input type="radio" name="email_primary" value="zeptomail" ${s.email_primary !== 'zoho_mail' ? 'checked' : ''}><span><strong>ZeptoMail</strong> first (recommended), then the Zoho Mail self-client, then Gmail</span></label>
+        <label class="check"><input type="radio" name="email_primary" value="zoho_mail" ${s.email_primary === 'zoho_mail' ? 'checked' : ''}><span><strong>Zoho Mail self-client</strong> first, then ZeptoMail, then Gmail</span></label>
+        <label class="check"><input type="radio" name="email_primary" value="gmail" ${s.email_primary === 'gmail' ? 'checked' : ''}><span><strong>Gmail</strong> first (good while you set up ZeptoMail), then ZeptoMail, then Zoho</span></label>
+        <p class="muted" style="font-size:.86rem">If the first service fails, the next one is tried automatically. Every attempt is recorded in Email → Sent log.</p>
         <div><button class="btn btn-primary sm" type="submit">Save</button></div></form>
 
         <form class="panel form" id="zf"><div class="bar"><h2 style="margin:0">Zoho ZeptoMail</h2>${set(s.zepto_token)}</div>
@@ -613,8 +619,20 @@
         <div class="row"><label class="f">Data centre${sel('zoho_dc', [['in', 'India (zoho.in)'], ['com', 'Global (zoho.com)'], ['eu', 'Europe (zoho.eu)'], ['au', 'Australia'], ['jp', 'Japan']], s.zoho_dc)}</label>${inp('zoho_client_id', 'Client ID')}</div>
         <div class="row"><label class="f">Client Secret<input name="zoho_client_secret" type="password" value="${esc(s.zoho_client_secret)}" autocomplete="off"></label><label class="f">Refresh token<input name="zoho_refresh_token" type="password" value="${esc(s.zoho_refresh_token)}" autocomplete="off"></label></div>
         ${inp('zoho_account_id', 'Account ID', 'Filled in by “Fetch account ID”')}
-        <div class="bar"><button class="btn btn-primary sm" type="submit">Save</button><button class="btn light sm" type="button" id="acct">Fetch account ID</button><button class="btn light sm" type="button" data-test="zoho_mail">Send test email</button></div></form>`;
+        <div class="bar"><button class="btn btn-primary sm" type="submit">Save</button><button class="btn light sm" type="button" id="acct">Fetch account ID</button><button class="btn light sm" type="button" data-test="zoho_mail">Send test email</button></div></form>
+
+        <form class="panel form" id="gf"><div class="bar"><h2 style="margin:0">Last-resort fallback: Gmail</h2><span id="gstat"><span class="pill pending">checking…</span></span></div>
+        <div class="help">Sends from the Google account that owns the Apps Script, so no setup is needed beyond one permission. Limits: about <strong>100 emails a day</strong> on a free Gmail account and 1,500 on Google Workspace.
+        <ol><li>In the Apps Script editor, select <code>authorizeGmail</code> and click <em>Run</em> once, then allow the Gmail permission.</li>
+        <li>To send <em>as</em> an address such as contact@superwingsfoundation.org, add it in Gmail: <em>Settings → Accounts → Send mail as</em>. Otherwise Gmail sends from the account's own address, with replies going to your contact email.</li></ol></div>
+        <label class="check"><input type="checkbox" name="gmail_enabled" ${s.gmail_enabled === '0' ? '' : 'checked'}><span>Use Gmail when the other services fail</span></label>
+        <div class="bar"><button class="btn btn-primary sm" type="submit">Save</button><button class="btn light sm" type="button" data-test="gmail">Send test email</button></div></form>`;
+      api('/api/admin/email/gmail').then((g) => {
+        const el = $('#gstat', sb); if (!el) return;
+        el.innerHTML = g.authorised ? `<span class="pill approved">ready</span> <span class="muted" style="font-size:.85rem">${esc(g.account)} · ${g.quota} left today${g.aliases.length ? ' · send-as: ' + esc(g.aliases.join(', ')) : ''}</span>` : '<span class="pill pending">run authorizeGmail()</span>';
+      }).catch(() => {});
       save($('#pf')); save($('#zf')); save($('#hf'));
+      bindForm($('#gf'), async (b) => { await api('/api/admin/settings', { method: 'PUT', body: { settings: { gmail_enabled: b.gmail_enabled ? '1' : '0' } } }); toast('Settings saved'); settings(main, ['email']); });
       $('#acct').onclick = () => wrap(async () => { const r = await api('/api/admin/email/zoho-account', { body: {} }); toast(`Connected: account ${r.accountId} ${r.address}`); settings(main, ['email']); });
       sb.querySelectorAll('[data-test]').forEach((b) => (b.onclick = () => wrap(async () => {
         const to = prompt('Send a test email to:', ME.email); if (!to) return;
@@ -638,6 +656,18 @@
         $('[name=def]', tr).onchange = () => wrap(async () => { await api('/api/admin/senders/' + tr.dataset.id, { method: 'PUT', body: { ...body(), is_default: true } }); toast('Default updated'); settings(main, ['senders']); });
         $('[data-del]', tr).onclick = () => wrap(async () => { if (!confirm('Delete this address?')) return; await api('/api/admin/senders/' + tr.dataset.id, { method: 'DELETE' }); settings(main, ['senders']); });
       });
+    }
+    if (tab === 'health') {
+      sb.innerHTML = '<div class="panel"><h2>System check</h2><p class="muted" id="hc-sub">Checking the server…</p><div id="hc"></div><div class="bar" style="margin-top:14px"><button class="btn light sm" id="hc-run">Run again</button></div></div>';
+      const run = async () => {
+        $('#hc', sb).innerHTML = '<div class="sk sk-block" style="height:200px"></div>';
+        try {
+          const t0 = Date.now(); const h = await api('/api/admin/health', { fresh: true });
+          $('#hc-sub', sb).textContent = `Server answered in ${Date.now() - t0} ms. API: ${SW.API}`;
+          $('#hc', sb).innerHTML = `<table class="t"><tbody>${h.checks.map((c) => `<tr><td style="width:34px">${c.ok ? '✅' : '⚠️'}</td><td><strong>${esc(c.name)}</strong></td><td class="muted">${esc(c.detail)}</td></tr>`).join('')}</tbody></table>`;
+        } catch (e) { $('#hc-sub', sb).textContent = 'Could not reach the server.'; $('#hc', sb).innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
+      };
+      $('#hc-run', sb).onclick = run; run();
     }
     if (tab === 'automation') {
       sb.innerHTML = `<form class="panel form" id="sf"><h2>Event emails</h2>

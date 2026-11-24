@@ -19,7 +19,8 @@ function fetchHandler(url, o) {
   if (url.startsWith('https://api.github.com/')) { sent.push({ via: 'github', url }); return { code: 204, body: '' }; }
   throw new Error('unexpected fetch ' + url);
 }
-const { gas, book, props } = loadGas(ROOT + 'apps-script/Code.gs', { fetchHandler });
+const gmail = { quota: 100, aliases: ['contact@superwingsfoundation.org'], sent: [], fail: false };
+const { gas, book, props } = loadGas(ROOT + 'apps-script/Code.gs', { fetchHandler, gmail });
 
 let pass = 0, fail = 0;
 const ok = (c, name, extra) => { if (c) { pass++; console.log('  ✓', name); } else { fail++; console.log('  ✗', name, extra !== undefined ? JSON.stringify(extra).slice(0, 300) : ''); } };
@@ -191,6 +192,39 @@ call('POST', '/api/admin/events', { title: 'Tree Plantation', start_at: at(200),
 ok(sent.at(-1).via === 'github' && sent.at(-1).url.endsWith('/repos/org/site/dispatches'), 'rebuild requested on event change');
 r = call('GET', '/api/nope');
 ok(r.status === 404, 'unknown route 404');
+
+console.log('\nGmail fallback & health check');
+zeptoDown = true;
+call('PUT', '/api/admin/settings', { settings: { zoho_refresh_token: '' } }, admin);
+r = call('POST', '/api/admin/email/test', { to: 'admin@x.org' }, admin);
+ok(r.data.ok && r.data.provider === 'gmail' && gmail.sent.length === 1, 'falls back to Gmail when ZeptoMail and Zoho fail', r.data);
+ok(gmail.sent[0].opts.from === 'contact@superwingsfoundation.org' && gmail.sent[0].opts.htmlBody.includes('<!DOCTYPE html>') && !gmail.sent[0].text.includes('<'), 'Gmail uses alias, HTML body and plain-text part');
+r = call('POST', '/api/admin/email/test', { to: 'admin@x.org', sender_id: evSender }, admin);
+ok(r.data.ok && !gmail.sent[1].opts.from && gmail.sent[1].opts.replyTo === 'contact@superwingsfoundation.org', 'non-alias sender falls back to account address with reply-to');
+call('PUT', '/api/admin/settings', { settings: { gmail_enabled: '0' } }, admin);
+r = call('POST', '/api/admin/email/test', { to: 'admin@x.org' }, admin);
+ok(!r.data.ok && /turned off/.test(r.data.error), 'Gmail fallback can be switched off');
+call('PUT', '/api/admin/settings', { settings: { gmail_enabled: '1', email_primary: 'gmail' } }, admin);
+zeptoDown = false;
+r = call('POST', '/api/admin/email/test', { to: 'admin@x.org' }, admin);
+ok(r.data.provider === 'gmail', 'Gmail can be primary');
+gmail.quota = 0;
+r = call('POST', '/api/admin/email/test', { to: 'admin@x.org' }, admin);
+ok(r.data.provider === 'zeptomail', 'skips Gmail when daily quota is used up');
+r = call('GET', '/api/admin/email/gmail', null, admin);
+ok(r.data.authorised && r.data.aliases.length === 1, 'Gmail status endpoint');
+r = call('GET', '/api/admin/health', null, admin);
+ok(r.ok && r.data.checks.find((c) => c.name === 'Sheet tabs').ok && r.data.checks.find((c) => c.name === 'Column headers').ok, 'health check passes', r.data);
+sheet('users').data[0][1] = 'Email';
+r = call('GET', '/api/admin/health', null, admin);
+ok(!r.data.checks.find((c) => c.name === 'Column headers').ok, 'health check spots edited headers');
+sheet('users').data[0][1] = 'email';
+gas.reset(); const h = JSON.parse(gas.doGet({ parameter: { action: 'health' } }).getContent());
+ok(h.ok && h.data.checks.length >= 7, 'public ?action=health works');
+sheet('events').name = 'events_renamed';
+r = call('GET', '/api/admin/events', null, admin);
+ok(!r.ok && /Sheet "events" is missing/.test(r.error), 'server errors now explain the real cause', r.error);
+sheet('events_renamed').name = 'events';
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

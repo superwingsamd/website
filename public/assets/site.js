@@ -28,12 +28,16 @@ const SW = (() => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function raw(path, method, body) {
+    if (!navigator.onLine) throw Object.assign(new Error('You appear to be offline.'), { network: true });
     if (!API || API.includes('PASTE_YOUR')) throw Object.assign(new Error('The website is not connected to its server yet.'), { status: 0 });
-    const res = await fetch(API, {
+    let res;
+    try { res = await fetch(API, {
       method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ path, method, body: body || {}, token: token.get() }),
-    });
-    const j = await res.json();
+    }); } catch { throw Object.assign(new Error('Could not reach the server (network or deployment problem).'), { network: true }); }
+    let j;
+    try { j = await res.json(); }
+    catch { throw Object.assign(new Error('The server did not answer with data. Check that the Apps Script web app is deployed with access set to "Anyone" and that config.js has the latest /exec URL.'), { status: 0, network: true }); }
     if (!j.ok) {
       if (j.status === 401 && token.get() && !path.startsWith('/api/auth/login')) token.clear();
       throw Object.assign(new Error(j.error || 'Request failed'), { status: j.status });
@@ -54,7 +58,7 @@ const SW = (() => {
       let last;
       for (let i = 0; i < 3; i++) { // quiet retries for flaky networks / cold starts
         try { return await raw(path, 'GET'); }
-        catch (e) { last = e; if (e.status && e.status < 500) break; await sleep(700 * (i + 1)); }
+        catch (e) { last = e; if (!e.network) break; await sleep(700 * (i + 1)); }
       }
       throw last;
     })();

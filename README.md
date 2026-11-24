@@ -54,8 +54,10 @@ After that, creating, editing or deleting an event rebuilds the event pages and 
 2. Go to **Settings → Email delivery**:
    - **ZeptoMail:** verify `superwingsfoundation.org` in ZeptoMail (SPF, DKIM and bounce records), then paste the agent's *Send Mail Token*.
    - **Zoho Mail self-client (fallback):** at api-console.zoho.in, create a Self Client with scope `ZohoMail.messages.CREATE,ZohoMail.accounts.READ`. Exchange the code for a refresh token, paste the Client ID, Client Secret and refresh token, then press **Fetch account ID**.
-   - Press **Send test email** for each.
-3. Add your From addresses under **Settings → From addresses**, add people under **Trustees & team**, and fill in **Settings → Donations & tax**.
+   - **Gmail (last resort):** in the Apps Script editor, run `authorizeGmail` once and allow the Gmail permission. To send *as* contact@superwingsfoundation.org, add it in Gmail under *Settings → Accounts → Send mail as*. Limit: ~100 emails/day on free Gmail, 1,500 on Workspace.
+   - Press **Send test email** for each. The order is ZeptoMail → Zoho → Gmail; you can change which goes first.
+3. If anything fails to load, open **Settings → System check**. It tells you exactly what's missing (sheet tabs, headers, trigger, email). You can also open `<your /exec URL>?action=health` directly in a browser.
+4. Add your From addresses under **Settings → From addresses**, add people under **Trustees & team**, and fill in **Settings → Donations & tax**.
 
 Email tokens are stored in **Script Properties**, not in the Sheet, so anyone who can view the Sheet can't see them.
 
@@ -64,7 +66,7 @@ Email tokens are stored in **Script Properties**, not in the Sheet, so anyone wh
 ## Working on it locally
 
 ```bash
-npm test          # 58 end-to-end tests of Code.gs in a mock Apps Script runtime (Node 22, no installs)
+npm test          # 69 end-to-end tests of Code.gs in a mock Apps Script runtime (Node 22, no installs)
 npm run preview   # http://localhost:8787: the full site + portal against the mock (setup token is printed)
 LATENCY=600 npm run preview   # same, with Apps Script-like delays to check the soft loading
 API_URL=https://…/exec npm run build   # pre-render event pages + sitemap from the live API

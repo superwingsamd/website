@@ -119,7 +119,15 @@ function verifyPassword(password, stored) {
 // ============================================================ sheet database
 let _ss = null;
 const _tables = {};
-function ss() { return _ss || (_ss = SpreadsheetApp.getActiveSpreadsheet() || SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SHEET_ID'))); }
+function ss() {
+  if (_ss) return _ss;
+  const id = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  if (id) return (_ss = SpreadsheetApp.openById(id));
+  let active = null;
+  try { active = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) { /* standalone script */ }
+  if (!active) throw new HttpError(500, 'No database sheet found. Open the Apps Script editor and run setup() once.');
+  return (_ss = active);
+}
 function toCell(v) { if (v == null) return ''; if (v === true) return '1'; if (v === false) return '0'; return String(v); }
 
 function Table(name) {
@@ -273,7 +281,8 @@ function doPost(e) {
   } catch (err) {
     const status = err instanceof HttpError ? err.status : 500;
     if (status === 500) console.error(err && err.stack || err);
-    return out({ ok: false, status: status, error: status === 500 ? 'Something went wrong on our side. Please try again.' : err.message });
+    const msg = (err && err.message) || String(err);
+    return out({ ok: false, status: status, error: status === 500 ? 'Server error: ' + msg : msg });
   } finally {
     if (lock) try { lock.releaseLock(); } catch (x) { /* ignore */ }
   }
@@ -284,6 +293,7 @@ function doGet(e) {
   try {
     if (p.action === 'sitemap') return ContentService.createTextOutput(sitemapXml()).setMimeType(ContentService.MimeType.XML);
     if (p.action === 'export') return out({ ok: true, data: exportForBuild() });
+    if (p.action === 'health') return out({ ok: true, data: health() });
     if (p.path) return doPost({ postData: { contents: JSON.stringify({ path: p.path, method: 'GET', token: p.token }) } });
     return out({ ok: true, service: 'Superwings Foundation API', time: nowIso() });
   } catch (err) {
@@ -874,10 +884,10 @@ on('GET', '/api/admin/settings', function (c) {
 });
 on('PUT', '/api/admin/settings', function (c) {
   requireRole(c.user, LEADERS);
-  const allowed = PUBLIC_KEYS.concat(SECRET_KEYS, ['email_primary', 'zepto_host', 'zoho_dc', 'zoho_client_id', 'zoho_account_id', 'reminder_hours', 'followup_hours']);
+  const allowed = PUBLIC_KEYS.concat(SECRET_KEYS, ['email_primary', 'zepto_host', 'zoho_dc', 'zoho_client_id', 'zoho_account_id', 'reminder_hours', 'followup_hours', 'gmail_enabled']);
   const o = {}, input = c.body.settings || {};
   Object.keys(input).forEach(function (k) { if (allowed.indexOf(k) >= 0) o[k] = str(input[k], 4000); });
-  if (o.email_primary) oneOf(o.email_primary, ['zeptomail', 'zoho_mail'], 'Primary provider');
+  if (o.email_primary) oneOf(o.email_primary, ['zeptomail', 'zoho_mail', 'gmail'], 'Primary provider');
   setSettings(o);
   if ('zoho_refresh_token' in o || 'zoho_client_id' in o || 'zoho_dc' in o) CacheService.getScriptCache().remove('zoho_at');
   return { ok: true };
@@ -910,12 +920,20 @@ on('DELETE', '/api/admin/senders/:id', function (c) {
 });
 
 // ---- email tools
+on('GET', '/api/admin/email/gmail', function (c) {
+  requireRole(c.user, LEADERS);
+  let quota = null, aliases = [], account = '';
+  try { quota = MailApp.getRemainingDailyQuota(); } catch (e) { /* not authorised */ }
+  try { aliases = GmailApp.getAliases(); } catch (e) { /* not authorised */ }
+  try { account = Session.getEffectiveUser().getEmail(); } catch (e) { /* hidden */ }
+  return { authorised: quota != null, quota: quota, aliases: aliases, account: account };
+});
 on('POST', '/api/admin/email/zoho-account', function (c) { requireRole(c.user, LEADERS); return Object.assign({ ok: true }, zohoFetchAccountId()); });
 on('POST', '/api/admin/email/test', function (c) {
   requireRole(c.user, LEADERS);
   const to = email(c.body.to || c.user.email);
-  const only = c.body.provider ? oneOf(c.body.provider, ['zeptomail', 'zoho_mail'], 'Provider') : null;
-  const label = only === 'zoho_mail' ? 'Zoho Mail (self-client)' : only === 'zeptomail' ? 'ZeptoMail' : 'your configured providers';
+  const only = c.body.provider ? oneOf(c.body.provider, ['zeptomail', 'zoho_mail', 'gmail'], 'Provider') : null;
+  const label = only === 'zoho_mail' ? 'Zoho Mail (self-client)' : only === 'zeptomail' ? 'ZeptoMail' : only === 'gmail' ? 'Gmail' : 'your configured providers';
   const html = TPL.custom(ctx(), 'Test email', 'This is a test message from your Superwings Foundation portal, sent through ' + label + '.\n\nIf you can read this, email is connected correctly.');
   return sendEmail({ to: to, subject: 'Test email from the portal', html: html, kind: 'test', senderId: c.body.sender_id, only: only });
 });
@@ -1016,6 +1034,20 @@ function sendZoho(s, msg) {
   if (code < 200 || code >= 300) throw new Error('Zoho Mail ' + code + ': ' + res.getContentText().slice(0, 300));
   return 'zoho_mail';
 }
+function sendGmail(s, msg) {
+  if (s.gmail_enabled === '0') throw new Error('Gmail fallback is turned off');
+  const recipients = msg.to.length + (msg.cc ? msg.cc.length : 0);
+  if (MailApp.getRemainingDailyQuota() < recipients) throw new Error('Gmail daily sending limit reached');
+  const opts = { htmlBody: msg.html, name: msg.from.name, replyTo: msg.replyTo || msg.from.address };
+  if (msg.cc && msg.cc.length) opts.cc = msg.cc.join(',');
+  // Gmail can only send "from" addresses added under Gmail Settings > Accounts > Send mail as.
+  let aliases = [];
+  try { aliases = GmailApp.getAliases().map(function (a) { return a.toLowerCase(); }); } catch (e) { /* aliases not readable */ }
+  if (aliases.indexOf(String(msg.from.address).toLowerCase()) >= 0) opts.from = msg.from.address;
+  const text = String(msg.html).replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  GmailApp.sendEmail(msg.to.map(function (t) { return t.address; }).join(','), msg.subject, text, opts);
+  return 'gmail';
+}
 function resolveSender(s, senderId) {
   const list = T('senders').rows();
   let row = senderId ? list.find(function (x) { return x.id === Number(senderId); }) : null;
@@ -1027,11 +1059,13 @@ function sendEmail(opts) {
   const s = getSettings(), from = resolveSender(s, opts.senderId);
   const to = Array.isArray(opts.to) ? opts.to : [{ address: opts.to, name: opts.toName }];
   const msg = { from: from, to: to, subject: opts.subject, html: opts.html, cc: opts.cc, replyTo: s.contact_email };
-  const order = opts.only ? [opts.only] : s.email_primary === 'zoho_mail' ? ['zoho_mail', 'zeptomail'] : ['zeptomail', 'zoho_mail'];
+  const all = ['zeptomail', 'zoho_mail', 'gmail'];
+  const first = all.indexOf(s.email_primary) >= 0 ? s.email_primary : 'zeptomail';
+  const order = opts.only ? [opts.only] : [first].concat(all.filter(function (p) { return p !== first; }));
   const errors = [];
   for (let i = 0; i < order.length; i++) {
     try {
-      const provider = order[i] === 'zeptomail' ? sendZepto(s, msg) : sendZoho(s, msg);
+      const provider = order[i] === 'zeptomail' ? sendZepto(s, msg) : order[i] === 'zoho_mail' ? sendZoho(s, msg) : sendGmail(s, msg);
       logEmail(opts.kind, to, from, opts.subject, provider, 'sent', errors.join(' | ') || null);
       return { ok: true, provider: provider };
     } catch (e) { errors.push(String(e.message || e)); }
@@ -1118,6 +1152,34 @@ function runScheduledInner() {
   T('email_log').remove(function (x) { return x.created_at < d180; });
   return res;
 }
+
+// ============================================================ HEALTH CHECK
+function health() {
+  const checks = [], add = function (name, ok, detail) { checks.push({ name: name, ok: !!ok, detail: detail || '' }); };
+  let book = null;
+  try { book = ss(); add('Database sheet', true, book.getName()); } catch (e) { add('Database sheet', false, e.message); }
+  if (book) {
+    const missing = Object.keys(SCHEMA).filter(function (n) { return !book.getSheetByName(n); });
+    add('Sheet tabs', !missing.length, missing.length ? 'Missing: ' + missing.join(', ') + '. Run setup().' : 'All ' + Object.keys(SCHEMA).length + ' tabs present');
+    const bad = Object.keys(SCHEMA).filter(function (n) {
+      const sh = book.getSheetByName(n); if (!sh) return false;
+      const head = sh.getRange(1, 1, 1, SCHEMA[n].length).getDisplayValues()[0];
+      return head.join('|') !== SCHEMA[n].join('|');
+    });
+    add('Column headers', !bad.length, bad.length ? 'Changed in: ' + bad.join(', ') + '. Do not edit row 1; run setup() to restore.' : 'OK');
+  }
+  const props = PropertiesService.getScriptProperties();
+  add('Setup token', !!props.getProperty('SETUP_TOKEN'), props.getProperty('SETUP_TOKEN') ? 'Set' : 'Run setup()');
+  let trig = false; try { trig = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'runScheduled'; }); } catch (e) { /* no permission */ }
+  add('5-minute job', trig, trig ? 'Trigger installed' : 'Run setup() to install it');
+  let s = {}; try { s = getSettings(); } catch (e) { /* reported above */ }
+  add('ZeptoMail', !!s.zepto_token, s.zepto_token ? 'Token saved' : 'Not connected');
+  add('Zoho Mail self-client', !!(s.zoho_refresh_token && s.zoho_account_id), s.zoho_refresh_token ? (s.zoho_account_id ? 'Connected' : 'Fetch account ID') : 'Not connected');
+  let gq = null; try { gq = MailApp.getRemainingDailyQuota(); } catch (e) { /* not authorised */ }
+  add('Gmail fallback', s.gmail_enabled !== '0' && gq != null, gq == null ? 'Not authorised yet: run authorizeGmail() in the editor' : s.gmail_enabled === '0' ? 'Turned off' : gq + ' emails left today');
+  return { ok: checks.every(function (c) { return c.ok || /Zepto|Zoho|Gmail/.test(c.name); }), checks: checks, time: nowIso() };
+}
+on('GET', '/api/admin/health', function (c) { requireRole(c.user, LEADERS); return health(); });
 
 // ============================================================ SITEMAP & BUILD EXPORT
 function exportForBuild() {
@@ -1265,7 +1327,17 @@ const TPL = {
 
 // ============================================================ ONE-TIME SETUP (run from the editor)
 function setup() {
-  const book = ss();
+  const props0 = PropertiesService.getScriptProperties();
+  let book = null;
+  try { book = SpreadsheetApp.getActiveSpreadsheet(); } catch (e) { /* standalone */ }
+  if (book && !props0.getProperty('SHEET_ID')) props0.setProperty('SHEET_ID', book.getId());
+  if (!book && props0.getProperty('SHEET_ID')) book = SpreadsheetApp.openById(props0.getProperty('SHEET_ID'));
+  if (!book) {
+    book = SpreadsheetApp.create('Superwings Foundation – Database');
+    props0.setProperty('SHEET_ID', book.getId());
+    console.log('Created database sheet: ' + book.getUrl());
+  }
+  _ss = book;
   Object.keys(SCHEMA).forEach(function (name) {
     let sh = book.getSheetByName(name);
     if (!sh) sh = book.insertSheet(name);
@@ -1284,10 +1356,19 @@ function setup() {
   mediaFolder();
   ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'runScheduled') ScriptApp.deleteTrigger(t); });
   ScriptApp.newTrigger('runScheduled').timeBased().everyMinutes(5).create();
-  const msg = 'Setup complete.\n\nSETUP TOKEN: ' + props.getProperty('SETUP_TOKEN') +
+  MailApp.getRemainingDailyQuota(); GmailApp.getAliases(); // asks for Gmail permission now
+  const msg = 'Setup complete.\n\nDatabase: ' + book.getUrl() + '\nSETUP TOKEN: ' + props.getProperty('SETUP_TOKEN') +
     '\n\nNext: Deploy > New deployment > Web app (Execute as: Me, Who has access: Anyone). Then open /portal/ on the website and use this token to create the first admin.';
   console.log(msg);
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) { /* run from the editor: see the log */ }
+  return msg;
+}
+/** Run once from the editor after adding the Gmail fallback, to grant Gmail permission. */
+function authorizeGmail() {
+  const q = MailApp.getRemainingDailyQuota();
+  const me = Session.getEffectiveUser().getEmail();
+  const msg = 'Gmail fallback authorised for ' + me + '. Emails left today: ' + q + '. Aliases: ' + (GmailApp.getAliases().join(', ') || 'none');
+  console.log(msg);
   return msg;
 }
 /** Shows the setup token again (in case you lost it). */
