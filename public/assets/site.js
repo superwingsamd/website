@@ -162,7 +162,7 @@ const SW = (() => {
       <div><span class="logo-pill"><img src="/assets/logo.jpg" alt="Superwings Foundation" width="92" height="48"></span>
         <p style="font-size:.94rem;max-width:300px">A public charitable trust working in education, skills, health and community welfare across Gujarat.</p></div>
       <div><h4>Explore</h4><ul><li><a href="/#about">About us</a></li><li><a href="/#work">Our work</a></li><li><a href="/#trustees">Trustees</a></li><li><a href="/events/">Events</a></li></ul></div>
-      <div><h4>Get involved</h4><ul><li><a href="/volunteer">Volunteer</a></li><li><a href="/volunteer#partner">Partner with us</a></li><li><a href="/donate">Donate</a></li><li><a href="/portal/">Portal sign in</a></li></ul></div>
+      <div><h4>Get involved</h4><ul><li><a href="/volunteer">Volunteer</a></li><li><a href="/volunteer#partner">Partner with us</a></li><li><a href="/donate">Donate</a></li><li><a href="/verify">Verify a document</a></li><li><a href="/portal/">Portal sign in</a></li></ul></div>
       <div><h4>Contact</h4><ul id="foot-contact"><li><a href="mailto:contact@superwingsfoundation.org">contact@superwingsfoundation.org</a></li><li>+91 99250 21383</li></ul></div>
     </div><div class="legal"><span>© ${new Date().getFullYear()} Superwings Foundation · Public Charitable Trust</span><span id="foot-reg">Reg. No. E/23237/Ahmedabad</span></div></div>`;
     document.body.append(footer);

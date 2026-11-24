@@ -145,8 +145,11 @@ ok(r.data.activities[0].strands === 'service,creativity' && r.data.activities[0]
 call('PUT', '/api/admin/activities/' + r.data.activities[0].id, { status: 'approved' }, admin);
 r = call('GET', '/api/me', null, riya);
 ok(r.data.totals.approved === 2.5 && r.data.user.role_label === 'Student Volunteer', 'student totals');
-r = call('GET', '/api/certificate/' + riyaId, null, riya);
-ok(r.ok && r.data.activities.length === 1, 'certificate data');
+r = call('POST', '/api/me/statement', {}, riya);
+ok(r.ok && /^SWF\/HS\/\d{4}-\d{2}\/0001$/.test(r.data.document.ref_no) && r.data.document.data.total_hours === 2.5, 'student issues hours statement', r);
+const st1 = r.data.document;
+r = call('POST', '/api/me/statement', {}, riya);
+ok(r.data.document.ref_no === st1.ref_no, 'same hours → same statement (no duplicates)');
 r = call('GET', '/api/admin/settings', null, riya);
 ok(r.status === 403, 'student blocked from admin');
 
@@ -165,7 +168,7 @@ ok(r.status === 403, 'coordinator blocked from donations');
 r = call('POST', '/api/donations', { name: 'Kiran', email: 'kiran@e.com', amount: 5000, pan: 'abcde1234f', txn_ref: 'UPI1' });
 ok(r.ok, 'donation pledge');
 r = call('PUT', '/api/admin/donations/1', { status: 'received' }, admin);
-ok(/^SWF\/\d{4}-\d{2}\/0001$/.test(r.data.receipt_no) && r.data.emailed && sent.at(-1).html.includes('AAA12A'), 'receipt issued', r.data);
+ok(/^SWF\/RC\/\d{4}-\d{2}\/0001$/.test(r.data.receipt_no) && r.data.emailed && sent.at(-1).html.includes('AAA12A') && sent.at(-1).html.includes('/document?ref='), 'receipt issued on letterhead', r.data);
 r = call('POST', '/api/admin/media', { mime: 'image/png', data: 'data:image/png;base64,iVBORw0KGgo=' }, admin);
 ok(r.ok && r.data.url.startsWith('https://lh3.googleusercontent.com/d/'), 'image uploaded to Drive');
 const many = Array.from({ length: 20 }, (_, i) => `p${i}@e.com`).join(',');
@@ -192,6 +195,35 @@ call('POST', '/api/admin/events', { title: 'Tree Plantation', start_at: at(200),
 ok(sent.at(-1).via === 'github' && sent.at(-1).url.endsWith('/repos/org/site/dispatches'), 'rebuild requested on event change');
 r = call('GET', '/api/nope');
 ok(r.status === 404, 'unknown route 404');
+
+console.log('\nOfficial documents & verification');
+r = call('POST', '/api/admin/documents', { type: 'letter', title: 'Letter of Appreciation', recipient_name: 'Asha Patel', recipient_email: 'asha@example.com', body: 'Thank you.', send_email: true }, coord);
+ok(r.ok && /^SWF\/LTR\//.test(r.data.document.ref_no) && r.data.emailed && sent.at(-1).subject.includes('SWF/LTR/'), 'coordinator issues letter + email');
+const letter = r.data.document;
+r = call('POST', '/api/admin/documents', { type: 'certificate', title: 'Certificate of Participation', recipient_name: 'Ravi', body: 'For participating.' }, admin);
+ok(/^SWF\/CERT\/.*0001$/.test(r.data.document.ref_no), 'certificate numbered separately');
+r = call('POST', '/api/admin/documents', { type: 'letter', title: 'Second', recipient_name: 'X', body: 'Y' }, admin);
+ok(r.data.document.ref_no.endsWith('/0002'), 'numbers increase per type');
+r = call('GET', '/api/verify?ref=' + encodeURIComponent(letter.ref_no.toLowerCase()) + '&code=' + letter.code.toLowerCase());
+ok(r.ok && r.data.document.status === 'valid' && r.data.document.recipient_name === 'Asha Patel' && !('recipient_email' in r.data.document), 'public verify (no login, no email exposed)');
+r = call('GET', '/api/verify?ref=' + encodeURIComponent(letter.ref_no) + '&code=WRONG123');
+ok(!r.ok && r.status === 404, 'wrong code rejected');
+r = call('GET', '/api/verify?ref=' + encodeURIComponent(st1.ref_no) + '&code=' + st1.code);
+ok(r.data.document.data.activities.length === 1 && r.data.document.type_label === 'Volunteer Hours Statement', 'statement verifiable with snapshot');
+r = call('GET', '/api/admin/documents', null, admin);
+const lid = r.data.documents.find((d) => d.ref_no === letter.ref_no).id;
+ok(r.data.documents.length === 5, 'register lists all documents');
+r = call('PUT', '/api/admin/documents/' + lid, { status: 'revoked' }, admin);
+ok(!r.ok, 'revoking needs a reason');
+call('PUT', '/api/admin/documents/' + lid, { status: 'revoked', reason: 'Issued in error' }, admin);
+r = call('GET', '/api/verify?ref=' + encodeURIComponent(letter.ref_no) + '&code=' + letter.code);
+ok(r.data.document.status === 'revoked' && r.data.document.revoked_reason === 'Issued in error', 'revoked shows on verify');
+r = call('PUT', '/api/admin/documents/' + lid, { status: 'revoked', reason: 'x' }, coord);
+ok(r.status === 403, 'only trustees/admins revoke');
+r = call('POST', '/api/admin/donations/1/document', {}, admin);
+ok(/^SWF\/RC\//.test(r.data.document.ref_no) && r.data.document.data.amount === 5000, 'receipt document retrievable');
+r = call('POST', '/api/admin/documents', { type: 'hours_statement', user_id: riyaId }, coord);
+ok(r.data.document.ref_no === st1.ref_no, 'staff can open a student statement');
 
 console.log('\nGmail fallback & health check');
 zeptoDown = true;

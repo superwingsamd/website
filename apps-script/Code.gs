@@ -46,6 +46,7 @@ const SCHEMA = {
   donations: ['id', 'receipt_no', 'name', 'email', 'phone', 'pan', 'address', 'amount', 'mode', 'txn_ref', 'purpose', 'message', 'status', 'received_at', 'created_at'],
   senders: ['id', 'address', 'name', 'is_default'],
   email_log: ['id', 'kind', 'to_addr', 'from_addr', 'subject', 'provider', 'status', 'error', 'created_at'],
+  documents: ['id', 'ref_no', 'code', 'type', 'title', 'recipient_name', 'recipient_email', 'user_id', 'ref_id', 'data', 'body', 'signatory', 'signatory_title', 'issued_by', 'issued_at', 'status', 'revoked_reason'],
   outbox: ['id', 'to_addr', 'to_name', 'cc', 'subject', 'html', 'kind', 'sender_id', 'ref_table', 'ref_id', 'ref_flag', 'attempts', 'status', 'last_error', 'created_at'],
 };
 const NUMERIC = ['id', 'user_id', 'event_id', 'sort', 'visible', 'capacity', 'reg_open', 'sender_id', 'confirm_sent', 'reminder_sent', 'followup_sent',
@@ -548,20 +549,6 @@ on('DELETE', '/api/me/activities/:id', function (c) {
   if (!n) bad('Only unverified activities can be deleted');
   return { ok: true };
 });
-on('GET', '/api/certificate/:uid', function (c) {
-  requireRole(c.user, ANYONE);
-  const uid = Number(c.params.uid);
-  if (c.user.role === 'student' && uid !== c.user.id) throw new HttpError(403, 'Not allowed');
-  const rec = volunteerRecord(uid);
-  rec.activities = rec.activities.filter(function (a) { return a.status === 'approved'; });
-  rec.settings = getSettings(PUBLIC_KEYS);
-  rec.signatories = T('people').all(function (p) { return p.visible !== 0; })
-    .sort(function (a, b) { return (a.kind === 'coordinator' ? 0 : 1) - (b.kind === 'coordinator' ? 0 : 1) || bySort(a, b); })
-    .slice(0, 2).map(function (p) { return { name: p.name, title: p.title }; });
-  rec.issued = fmtDate(nowIso());
-  return rec;
-});
-
 // ============================================================ STAFF
 on('POST', '/api/admin/media', function (c) {
   requireRole(c.user, STAFF);
@@ -798,14 +785,6 @@ on('DELETE', '/api/admin/people/:id', function (c) {
 });
 
 // ---- donations
-function nextReceiptNo(receivedIso) {
-  const d = new Date(new Date(receivedIso).getTime() + 5.5 * 3600e3);
-  const y = d.getUTCFullYear(), fy = d.getUTCMonth() >= 3 ? y : y - 1;
-  const prefix = 'SWF/' + fy + '-' + String(fy + 1).slice(2) + '/';
-  const max = T('donations').all(function (x) { return x.receipt_no && x.receipt_no.indexOf(prefix) === 0; })
-    .reduce(function (m, x) { return Math.max(m, Number(x.receipt_no.split('/').pop())); }, 0);
-  return prefix + ('000' + (max + 1)).slice(-4);
-}
 on('GET', '/api/admin/donations', function (c) {
   requireRole(c.user, LEADERS);
   return { donations: T('donations').all().sort(function (a, b) { return (a.status === 'pledged' ? 0 : 1) - (b.status === 'pledged' ? 0 : 1) || b.created_at.localeCompare(a.created_at); }).slice(0, 500) };
@@ -824,15 +803,135 @@ on('PUT', '/api/admin/donations/:id', function (c) {
   if (!d) throw new HttpError(404, 'Donation not found');
   const hadReceipt = !!d.receipt_no, status = oneOf(b.status || d.status, ['pledged', 'received', 'cancelled'], 'Status');
   let receipt_no = d.receipt_no, received_at = d.received_at;
-  if (status === 'received' && !receipt_no) { received_at = b.received_at ? isoDateTime(b.received_at, 'Received date') : nowIso(); receipt_no = nextReceiptNo(received_at); }
   T('donations').update(d, { status: status, txn_ref: optStr(b.txn_ref != null ? b.txn_ref : d.txn_ref, 120),
-    pan: (optStr(b.pan != null ? b.pan : d.pan, 10) || '').toUpperCase() || null, receipt_no: receipt_no, received_at: received_at });
+    pan: (optStr(b.pan != null ? b.pan : d.pan, 10) || '').toUpperCase() || null });
+  if (status === 'received' && !receipt_no) {
+    received_at = b.received_at ? isoDateTime(b.received_at, 'Received date') : nowIso();
+    T('donations').update(d, { received_at: received_at });
+    receipt_no = receiptDocument(d, c.user).ref_no;
+    T('donations').update(d, { receipt_no: receipt_no });
+  }
   let emailed = null;
   if (status === 'received' && (b.send_receipt || (!hadReceipt && b.send_receipt !== false))) {
-    const t = TPL.donationReceipt(ctx(), d);
+    const t = TPL.donationReceipt(ctx(), d, receiptDocument(d, c.user));
     emailed = sendEmail({ to: d.email, toName: d.name, subject: t.subject, html: t.html, kind: 'donation_receipt' }).ok;
   }
   return { ok: true, receipt_no: receipt_no, emailed: emailed };
+});
+
+// ============================================================ OFFICIAL DOCUMENTS (letterhead + verification)
+const DOC_TYPES = { hours_statement: 'HS', donation_receipt: 'RC', letter: 'LTR', certificate: 'CERT' };
+const DOC_LABEL = { hours_statement: 'Volunteer Hours Statement', donation_receipt: 'Donation Receipt', letter: 'Letter', certificate: 'Certificate' };
+function financialYear(iso) {
+  const d = new Date(new Date(iso).getTime() + 5.5 * 3600e3), y = d.getUTCFullYear(), fy = d.getUTCMonth() >= 3 ? y : y - 1;
+  return fy + '-' + String(fy + 1).slice(2);
+}
+/** Creates a numbered document: SWF/<TYPE>/<FY>/<0001>. */
+function issueDocument(o) {
+  const issued_at = o.issued_at || nowIso();
+  const prefix = 'SWF/' + DOC_TYPES[o.type] + '/' + financialYear(issued_at) + '/';
+  const max = T('documents').all(function (x) { return x.ref_no && x.ref_no.indexOf(prefix) === 0; })
+    .reduce(function (m, x) { return Math.max(m, Number(x.ref_no.split('/').pop())); }, 0);
+  return T('documents').insert({
+    ref_no: prefix + ('000' + (max + 1)).slice(-4), code: randomCode(8), type: o.type, title: o.title || DOC_LABEL[o.type],
+    recipient_name: o.recipient_name, recipient_email: o.recipient_email || null, user_id: o.user_id || null, ref_id: o.ref_id || null,
+    data: o.data ? JSON.stringify(o.data) : null, body: o.body || null, signatory: o.signatory || null, signatory_title: o.signatory_title || null,
+    issued_by: o.issued_by || null, issued_at: issued_at, status: 'valid', revoked_reason: null,
+  });
+}
+function defaultSignatory(kind) {
+  const people = T('people').all(function (p) { return p.visible !== 0; }).sort(bySort);
+  const pick = people.filter(function (p) { return p.kind === (kind || 'trustee'); })[0] || people[0];
+  return pick ? { name: pick.name, title: pick.title } : { name: 'Board of Trustees', title: getSettings(['org_name']).org_name };
+}
+function verifyUrl(doc) { return siteUrl() + '/verify?ref=' + encodeURIComponent(doc.ref_no) + '&code=' + doc.code; }
+function documentUrl(doc) { return siteUrl() + '/document?ref=' + encodeURIComponent(doc.ref_no) + '&code=' + doc.code; }
+function publicDoc(doc) {
+  let data = null; try { data = doc.data ? JSON.parse(doc.data) : null; } catch (e) { /* ignore */ }
+  return { ref_no: doc.ref_no, code: doc.code, type: doc.type, type_label: DOC_LABEL[doc.type], title: doc.title, recipient_name: doc.recipient_name,
+    data: data, body: doc.body, signatory: doc.signatory, signatory_title: doc.signatory_title, issued_at: doc.issued_at,
+    status: doc.status, revoked_reason: doc.revoked_reason, verify_url: verifyUrl(doc), document_url: documentUrl(doc) };
+}
+function receiptDocument(d, user) {
+  const existing = T('documents').find(function (x) { return x.type === 'donation_receipt' && x.ref_id === d.id; });
+  if (existing) return existing;
+  const sg = defaultSignatory('trustee');
+  return issueDocument({ type: 'donation_receipt', title: 'Donation Receipt', recipient_name: d.name, recipient_email: d.email, ref_id: d.id,
+    issued_at: d.received_at || nowIso(), issued_by: user ? user.name : null, signatory: sg.name, signatory_title: sg.title,
+    data: { amount: d.amount, mode: d.mode, txn_ref: d.txn_ref, pan: d.pan, address: d.address, purpose: d.purpose, received_at: d.received_at } });
+}
+function hoursStatement(uid, user) {
+  const rec = volunteerRecord(uid);
+  const acts = rec.activities.filter(function (a) { return a.status === 'approved'; }).sort(function (a, b) { return a.date.localeCompare(b.date); });
+  if (!acts.length) bad('There are no verified hours yet. A statement can be issued once a coordinator verifies at least one activity.');
+  const total = Math.round(acts.reduce(function (t, a) { return t + Number(a.hours); }, 0) * 100) / 100;
+  const prev = T('documents').all(function (x) { return x.type === 'hours_statement' && x.user_id === uid && x.status === 'valid'; })
+    .sort(function (a, b) { return b.id - a.id; })[0];
+  if (prev) { try { const pd = JSON.parse(prev.data); if (pd.total_hours === total && pd.activities.length === acts.length) return prev; } catch (e) { /* re-issue */ } }
+  const p = rec.profile, sg = defaultSignatory('coordinator');
+  return issueDocument({ type: 'hours_statement', title: 'Volunteer Hours Statement', recipient_name: p.name, recipient_email: p.email, user_id: uid,
+    issued_by: user ? user.name : null, signatory: sg.name, signatory_title: sg.title,
+    data: { programme: p.programme, programme_label: p.programme_label, institution: p.partner_name || p.institution, grade: p.grade, total_hours: total,
+      period_from: acts[0].date, period_to: acts[acts.length - 1].date,
+      activities: acts.map(function (a) { return { date: a.date, title: a.title, hours: a.hours, strands: a.strands, outcomes: a.outcomes }; }) } });
+}
+
+// public verification (anyone with the reference number and code)
+on('GET', '/api/verify', function (c) {
+  const ref = str(c.query.ref, 60).toUpperCase(), code = str(c.query.code, 20).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!ref || !code) bad('Enter the reference number and the verification code printed on the document');
+  const doc = T('documents').find(function (x) { return x.ref_no.toUpperCase() === ref && x.code === code; });
+  if (!doc) throw new HttpError(404, 'No document matches this reference number and code. Check both and try again.');
+  return { document: publicDoc(doc), settings: getSettings(PUBLIC_KEYS) };
+});
+// students: issue (or re-open) their own statement
+on('POST', '/api/me/statement', function (c) {
+  requireRole(c.user, ['student']);
+  return { document: publicDoc(hoursStatement(c.user.id, c.user)) };
+});
+on('GET', '/api/admin/documents', function (c) {
+  requireRole(c.user, STAFF);
+  return { documents: T('documents').all().sort(function (a, b) { return b.id - a.id; }).slice(0, 1000).map(function (d) {
+    return { id: d.id, ref_no: d.ref_no, code: d.code, type: d.type, type_label: DOC_LABEL[d.type], title: d.title, recipient_name: d.recipient_name,
+      recipient_email: d.recipient_email, issued_by: d.issued_by, issued_at: d.issued_at, status: d.status, revoked_reason: d.revoked_reason,
+      document_url: documentUrl(d), verify_url: verifyUrl(d) };
+  }) };
+});
+on('POST', '/api/admin/documents', function (c) {
+  requireRole(c.user, STAFF);
+  const b = c.body, type = oneOf(b.type, ['letter', 'certificate', 'hours_statement'], 'Document type');
+  let doc;
+  if (type === 'hours_statement') doc = hoursStatement(Number(b.user_id), c.user);
+  else {
+    let sg = null;
+    if (b.signatory_id) { const p = T('people').get(Number(b.signatory_id)); if (p) sg = { name: p.name, title: p.title }; }
+    if (!sg) sg = defaultSignatory('trustee');
+    doc = issueDocument({ type: type, title: reqStr(b.title, 'Title', 200), recipient_name: reqStr(b.recipient_name, 'Recipient name', 160),
+      recipient_email: optEmail(b.recipient_email, 'Recipient email'), body: reqStr(b.body, 'Text', 15000), issued_by: c.user.name,
+      signatory: sg.name, signatory_title: sg.title,
+      data: { subtitle: optStr(b.subtitle, 200), recipient_line: optStr(b.recipient_line, 400), subject: optStr(b.subject, 300) } });
+  }
+  let emailed = null;
+  if (b.send_email && doc.recipient_email) {
+    const t = TPL.documentIssued(ctx(), doc);
+    emailed = sendEmail({ to: doc.recipient_email, toName: doc.recipient_name, subject: t.subject, html: t.html, kind: 'document_issued' }).ok;
+  }
+  return { ok: true, document: publicDoc(doc), emailed: emailed };
+});
+on('PUT', '/api/admin/documents/:id', function (c) {
+  requireRole(c.user, LEADERS);
+  const d = T('documents').get(Number(c.params.id));
+  if (!d) throw new HttpError(404, 'Document not found');
+  const status = oneOf(c.body.status, ['valid', 'revoked'], 'Status');
+  if (status === 'revoked' && !str(c.body.reason)) bad('Give a short reason for revoking (shown to anyone who verifies it)');
+  T('documents').update(d, { status: status, revoked_reason: status === 'revoked' ? str(c.body.reason, 300) : null });
+  return { ok: true };
+});
+on('POST', '/api/admin/donations/:id/document', function (c) {
+  requireRole(c.user, LEADERS);
+  const d = T('donations').get(Number(c.params.id));
+  if (!d || d.status !== 'received') bad('A receipt exists only after the donation is marked received');
+  return { document: publicDoc(receiptDocument(d, c.user)) };
 });
 
 // ---- users
@@ -1191,7 +1290,7 @@ function exportForBuild() {
 }
 function sitemapXml() {
   const base = siteUrl();
-  const pages = [['/', 'weekly', '1.0'], ['/events/', 'daily', '0.9'], ['/volunteer', 'monthly', '0.8'], ['/donate', 'monthly', '0.7']];
+  const pages = [['/', 'weekly', '1.0'], ['/events/', 'daily', '0.9'], ['/volunteer', 'monthly', '0.8'], ['/donate', 'monthly', '0.7'], ['/verify', 'yearly', '0.4']];
   const urls = pages.map(function (p) { return '<url><loc>' + esc(base + p[0]) + '</loc><changefreq>' + p[1] + '</changefreq><priority>' + p[2] + '</priority></url>'; });
   T('events').all(function (e) { return e.status === 'published'; }).forEach(function (e) {
     urls.push('<url><loc>' + esc(base + '/events/' + e.slug + '/') + '</loc><lastmod>' + (e.updated_at || e.created_at || nowIso()).slice(0, 10) + '</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>');
@@ -1301,13 +1400,22 @@ const TPL = {
       body: P('Dear ' + esc(d.name) + ',') + P('Thank you for choosing to support ' + esc(cx.s.org_name) + '. We have recorded your contribution and will send a formal receipt once the funds reach our account.') +
         card([['Amount', inr(d.amount)], ['Mode', esc(d.mode)], ['Transaction reference', esc(d.txn_ref)], ['Purpose', esc(d.purpose)]]) })) };
   },
-  donationReceipt: function (cx, d) {
+  documentIssued: function (cx, doc) {
+    return { subject: DOC_LABEL[doc.type] + ' ' + doc.ref_no + ': ' + cx.s.org_name, html: layout(L(cx, { title: 'Your ' + DOC_LABEL[doc.type].toLowerCase() + ' is ready', preheader: doc.ref_no,
+      body: P('Dear ' + esc(doc.recipient_name) + ',') + P(esc(cx.s.org_name) + ' has issued the following document to you on its official letterhead.') +
+        card([['Document', esc(doc.title)], ['Reference no.', esc(doc.ref_no)], ['Verification code', '<span style="font-family:monospace;letter-spacing:2px">' + esc(doc.code) + '</span>'], ['Issued on', esc(fmtDate(doc.issued_at))]]) +
+        P('You can print it or save it as a PDF. Anyone can confirm it is genuine at <a href="' + esc(verifyUrl(doc)) + '" style="color:' + G + '">' + esc(cx.siteUrl.replace(/^https?:\/\//, '')) + '/verify</a>.'),
+      cta: { label: 'Open document', url: documentUrl(doc) } })) };
+  },
+  donationReceipt: function (cx, d, doc) {
     const s = cx.s;
     const tax = s.reg_80g ? P('<span style="font-size:13px;color:#6b7b71">Donations to ' + esc(s.org_name) + ' qualify for deduction under Section 80G of the Income Tax Act, 1961. 80G registration no. ' + esc(s.reg_80g) + (s.reg_80g_validity ? ', valid ' + esc(s.reg_80g_validity) : '') + '. Trust PAN: ' + esc(s.pan) + '.</span>') : '';
     return { subject: 'Receipt ' + d.receipt_no + ': ' + s.org_name, html: layout(L(cx, { title: 'Donation receipt', preheader: 'Receipt ' + d.receipt_no,
       body: P('Dear ' + esc(d.name) + ',') + P('We gratefully acknowledge the following contribution:') +
         card([['Receipt no.', esc(d.receipt_no)], ['Date received', esc(fmtDate(d.received_at))], ['Received from', esc(d.name)], ['Donor PAN', esc(d.pan)], ['Amount', inr(d.amount)],
-          ['Mode', esc(d.mode)], ['Reference', esc(d.txn_ref)], ['Trust PAN', esc(s.pan)], ['12A registration', esc(s.reg_12a)]]) + tax + P('With gratitude,<br><strong>Board of Trustees</strong>') })) };
+          ['Mode', esc(d.mode)], ['Reference', esc(d.txn_ref)], ['Trust PAN', esc(s.pan)], ['12A registration', esc(s.reg_12a)], ['Verification code', doc ? '<span style="font-family:monospace;letter-spacing:2px">' + esc(doc.code) + '</span>' : '']]) + tax +
+        P('With gratitude,<br><strong>Board of Trustees</strong>'),
+      cta: doc ? { label: 'Download receipt on letterhead', url: documentUrl(doc) } : null })) };
   },
   passwordReset: function (cx, u, link) {
     return { subject: 'Set your password', html: layout(L(cx, { title: 'Set your password', preheader: 'This link is valid for 24 hours',

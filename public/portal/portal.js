@@ -77,6 +77,15 @@
     });
   }
 
+  const docLink = (d) => `/document?ref=${encodeURIComponent(d.ref_no)}&code=${encodeURIComponent(d.code)}`;
+  // open the window first (popup blockers), then point it at the document once it is issued
+  async function openDoc(fetcher) {
+    const w = window.open('', '_blank');
+    if (w) w.document.write('<p style="font:16px system-ui;padding:40px;color:#5b6b61">Preparing the document on letterhead…</p>');
+    try { const d = await fetcher(); if (w) w.location = docLink(d); else location.href = docLink(d); return d; }
+    catch (e) { if (w) w.close(); toast(e.message, true); }
+  }
+
   // ------------------------------------------------------------------ auth screens
   function authShell(title, sub, inner) {
     VIEW = document; window.onhashchange = null;
@@ -184,11 +193,11 @@
     const me = await api('/api/me'); Object.assign(ME, me.user);
     const items = [
       ['dashboard', 'Dashboard', 'Overview'], ['events', 'Events'], ['volunteers', 'Volunteers', 'Volunteer programme'], ['hours', 'Hours review'], ['partners', 'Partner institutions'],
-      ['email', 'Email', 'Communication'],
+      ['email', 'Email', 'Communication'], ['documents', 'Letters & certificates'],
       ...(isLead() ? [['people', 'Trustees & team', 'Organisation'], ['donations', 'Donations'], ['users', 'Portal users'], ['settings', 'Settings']] : []),
       ['account', 'My account'],
     ];
-    const views = { dashboard, events, volunteers, hours, partners, email: emailView, people, donations, users, settings, account };
+    const views = { dashboard, events, volunteers, hours, partners, email: emailView, documents, people, donations, users, settings, account };
     shell(items, (v, args, main) => (views[v] || dashboard)(main, args));
     // warm the most used sections in the background so switching feels instant
     setTimeout(async () => {
@@ -362,10 +371,11 @@
         <div class="help"><strong>Interests</strong><br>${esc(p.interests || '—')}<br><br><strong>Availability</strong><br>${esc(p.availability || '—')}
         <br><br><strong>Guardian consent</strong> ${p.guardian_consent ? 'Yes' : 'Not needed / not given'}</div></div>
       <div class="bar" style="margin-bottom:16px"><span class="big-num" style="font-size:2rem">${totals.approved}</span><span class="muted">verified hours · ${totals.pending} pending</span><span class="spacer"></span>
-        <a class="btn light sm" target="_blank" href="/portal/certificate.html?u=${uid}">Hours statement ↗</a></div>
+        <button class="btn light sm" id="vstmt">Issue hours statement ↗</button></div>
       <label class="f">Note to the volunteer (optional, included in the email)<textarea id="vnote" style="min-height:70px"></textarea></label>
       <div class="bar" style="margin:12px 0 22px"><button class="btn btn-primary sm" data-s="approved">Approve</button><button class="btn danger sm" data-s="rejected">Decline</button><button class="btn light sm" data-s="pending">Mark pending</button></div>
       <h3>Activities</h3>${activities.length ? activities.map(actCard).join('') : '<p class="muted">No activities logged yet.</p>'}`);
+    $('#vstmt', m.el).onclick = () => openDoc(async () => (await api('/api/admin/documents', { body: { type: 'hours_statement', user_id: uid } })).document);
     m.el.querySelectorAll('[data-s]').forEach((b) => (b.onclick = () => wrap(async () => {
       await api('/api/admin/volunteers/' + uid, { method: 'PUT', body: { status: b.dataset.s, note: $('#vnote', m.el).value } });
       toast('Volunteer updated'); m.close(); refresh();
@@ -478,10 +488,12 @@
         <div class="help" style="margin:14px 0">${esc(x.email)} · ${esc(x.phone || '')}<br>${esc(x.address || '')}<br>${x.message ? `<em>${esc(x.message)}</em>` : ''}</div>
         <form class="form" id="df"><div class="row"><label class="f">Transaction reference<input name="txn_ref" value="${esc(x.txn_ref || '')}"></label><label class="f">Donor PAN<input name="pan" maxlength="10" value="${esc(x.pan || '')}"></label></div>
         ${x.status !== 'received' ? `<label class="f">Date received<input type="date" name="received_on" value="${new Date().toISOString().slice(0, 10)}"></label>` : `<p>Receipt <strong>${esc(x.receipt_no)}</strong> issued ${esc(d(x.received_at))}.</p>`}
-        <div class="bar">${x.status !== 'received' ? '<button class="btn btn-primary" data-act="receive">Mark received & email receipt</button>' : '<button class="btn btn-primary" data-act="resend">Resend receipt</button>'}
+        <div class="bar">${x.status !== 'received' ? '<button class="btn btn-primary" data-act="receive">Mark received & email receipt</button>' : '<button class="btn btn-primary" type="button" data-receipt>View receipt on letterhead ↗</button><button class="btn light" data-act="resend">Resend receipt</button>'}
         <button class="btn light" data-act="save">Save details</button>${x.status === 'pledged' ? '<span class="spacer"></span><button class="btn danger sm" data-act="cancel">Cancel pledge</button>' : ''}</div></form>`);
       const f = $('#df', m.el);
       f.onsubmit = (e) => e.preventDefault();
+      const rb = $('[data-receipt]', m.el);
+      if (rb) rb.onclick = () => openDoc(async () => (await api(`/api/admin/donations/${x.id}/document`, { body: {} })).document);
       f.querySelectorAll('[data-act]').forEach((b) => (b.onclick = () => wrap(async () => {
         const v = SW.formData(f), act = b.dataset.act;
         const body = { txn_ref: v.txn_ref, pan: v.pan };
@@ -542,6 +554,82 @@
       if (r.queued) toast(`${r.queued} emails queued. They will go out within a few minutes.`);
       else if (r.ok) toast(`Sent to ${r.sent} recipient(s)`);
       else throw new Error(`Sent ${r.sent}. Failed: ${r.errors.join('; ')}`);
+    });
+  }
+
+  // ------------------------------------------------------------------ documents (letters, certificates, statements, receipts)
+  const PRESETS = {
+    letter: {
+      'Volunteer completion letter': { title: 'Volunteer Completion Letter', subject: 'Completion of volunteering', body: 'This is to certify that {name} volunteered with Superwings Foundation from [start date] to [end date], contributing [number] hours to our [programme / project] in [area], Ahmedabad.\n\nDuring this period, {first} [describe the work, e.g. conducted reading circles for primary school children and helped organise our winter literacy drive]. {first} was punctual, responsible and worked well with the community and our team.\n\nWe thank {first} for this contribution and wish them every success.' },
+      'Letter of appreciation': { title: 'Letter of Appreciation', subject: 'Appreciation for your support', body: 'On behalf of the Board of Trustees of Superwings Foundation, we thank you for [describe the support or contribution].\n\nYour support has helped us [describe the impact]. We are grateful for your generosity and commitment to the communities we serve.\n\nWe look forward to working together again.' },
+      'Confirmation / NOC': { title: 'Letter of Confirmation', subject: 'Confirmation of association', body: 'This is to confirm that {name} is associated with Superwings Foundation as [role] since [date].\n\nWe have no objection to {first} [purpose, e.g. using this letter for their university records].\n\nThis letter is issued on request for official purposes.' },
+      'Blank letter': { title: '', subject: '', body: '' },
+    },
+    certificate: {
+      'Certificate of participation': { title: 'Certificate of Participation', subtitle: '[Event or programme name], [month year]', body: 'for participating in [event / programme] organised by Superwings Foundation, Ahmedabad.' },
+      'Certificate of appreciation': { title: 'Certificate of Appreciation', subtitle: '', body: 'in grateful recognition of outstanding service and dedication to the communities served by Superwings Foundation.' },
+      'Certificate of completion': { title: 'Certificate of Completion', subtitle: '[Programme name]', body: 'for successfully completing [number] hours of community service in the [programme name] with Superwings Foundation.' },
+      'Blank certificate': { title: '', subtitle: '', body: '' },
+    },
+  };
+  async function documents(main, [filter = 'all']) {
+    const [{ documents: list }, { people: ppl }] = await Promise.all([api('/api/admin/documents'), api('/api/admin/people')]);
+    const types = [['all', 'All'], ['letter', 'Letters'], ['certificate', 'Certificates'], ['hours_statement', 'Hours statements'], ['donation_receipt', 'Receipts']];
+    const shown = list.filter((x) => filter === 'all' || x.type === filter);
+    main.innerHTML = top('Letters & certificates', '<button class="btn btn-primary sm" data-new="letter">+ New letter</button><button class="btn btn-primary sm" data-new="certificate">+ New certificate</button>') +
+      `<div class="notice ok">Every document is printed on the foundation's letterhead with an automatic reference number, a verification code and a QR code. Anyone can check it at <a href="/verify" target="_blank" style="color:var(--green);font-weight:800">/verify</a>.</div>
+      <div class="subtabs">${types.map(([k, t]) => `<button class="${k === filter ? 'on' : ''}" onclick="location.hash='documents/${k}'">${t} (${k === 'all' ? list.length : list.filter((x) => x.type === k).length})</button>`).join('')}</div>
+      <div class="panel tw">${shown.length ? `<input id="dq" placeholder="Search by name or reference number" style="font:inherit;width:100%;max-width:360px;padding:.55rem .8rem;border:1.5px solid var(--line);border-radius:10px;margin-bottom:12px">
+      <table class="t"><thead><tr><th>Reference no.</th><th>Document</th><th>Issued to</th><th>Issued</th><th>Status</th><th></th></tr></thead><tbody>
+      ${shown.map((x) => `<tr data-q="${esc((x.ref_no + ' ' + x.recipient_name + ' ' + x.title).toLowerCase())}"><td><code>${esc(x.ref_no)}</code><div class="muted" style="font-size:.76rem">code ${esc(x.code)}</div></td>
+        <td><strong>${esc(x.title)}</strong><div class="muted" style="font-size:.8rem">${esc(x.type_label)}${x.issued_by ? ' · by ' + esc(x.issued_by) : ''}</div></td>
+        <td>${esc(x.recipient_name)}<div class="muted" style="font-size:.8rem">${esc(x.recipient_email || '')}</div></td><td>${esc(d(x.issued_at))}</td>
+        <td><span class="pill ${x.status === 'valid' ? 'approved' : 'rejected'}">${x.status === 'valid' ? 'valid' : 'revoked'}</span>${x.revoked_reason ? `<div class="muted" style="font-size:.76rem">${esc(x.revoked_reason)}</div>` : ''}</td>
+        <td class="bar" style="flex-wrap:nowrap"><a class="btn light sm" target="_blank" href="${docLink(x)}">Open ↗</a><button class="btn light sm" data-copy="${esc(location.origin + '/verify?ref=' + encodeURIComponent(x.ref_no) + '&code=' + x.code)}">Copy verify link</button>
+        ${isLead() ? (x.status === 'valid' ? `<button class="btn danger sm" data-revoke="${x.id}">Revoke</button>` : `<button class="btn light sm" data-restore="${x.id}">Restore</button>`) : ''}</td></tr>`).join('')}
+      </tbody></table>` : '<div class="empty-s">No documents yet. Issue a letter or certificate, or open a volunteer\'s hours statement.</div>'}</div>`;
+    const dq = $('#dq', main);
+    if (dq) dq.oninput = () => main.querySelectorAll('tr[data-q]').forEach((tr) => (tr.hidden = !tr.dataset.q.includes(dq.value.toLowerCase())));
+    main.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = async () => { try { await navigator.clipboard.writeText(b.dataset.copy); toast('Verification link copied'); } catch { prompt('Copy this link:', b.dataset.copy); } }));
+    main.querySelectorAll('[data-revoke]').forEach((b) => (b.onclick = () => wrap(async () => {
+      const reason = prompt('Why is this document being revoked? Anyone who verifies it will see this reason.'); if (!reason) return;
+      await api('/api/admin/documents/' + b.dataset.revoke, { method: 'PUT', body: { status: 'revoked', reason } }); toast('Document revoked'); documents(main, [filter]);
+    })));
+    main.querySelectorAll('[data-restore]').forEach((b) => (b.onclick = () => wrap(async () => {
+      await api('/api/admin/documents/' + b.dataset.restore, { method: 'PUT', body: { status: 'valid' } }); toast('Document restored'); documents(main, [filter]);
+    })));
+    main.querySelectorAll('[data-new]').forEach((b) => (b.onclick = () => newDocument(b.dataset.new, ppl, () => documents(main, [filter]))));
+  }
+  function newDocument(type, ppl, refresh) {
+    const presets = PRESETS[type], first = Object.keys(presets)[0];
+    const signers = ppl.filter((p) => p.visible !== 0);
+    const m = modal(`<h2 style="font-size:1.5rem;margin-bottom:6px">New ${type}</h2><p class="muted" style="font-size:.9rem;margin-bottom:14px">Printed on letterhead with an automatic reference number. Replace anything in [square brackets]. {name} and {first} are filled in from the recipient's name.</p>
+      <form class="form" id="nd"><label class="f">Start from${sel('preset', Object.keys(presets).map((k) => [k, k]), first)}</label>
+      <div class="row"><label class="f">Recipient's full name<input name="recipient_name" required></label><label class="f">Recipient's email <span class="hint">optional</span><input name="recipient_email" type="email"></label></div>
+      ${type === 'letter' ? '<label class="f">Recipient address / designation <span class="hint">optional, shown under “To,”</span><textarea name="recipient_line" style="min-height:60px"></textarea></label><label class="f">Subject<input name="subject"></label>' : '<label class="f">Line under the title <span class="hint">optional</span><input name="subtitle"></label>'}
+      <label class="f">Title<input name="title" required></label>
+      <label class="f">${type === 'letter' ? 'Letter text' : 'Certificate text'} <span class="hint">Blank line = new paragraph</span><textarea name="body" required style="min-height:${type === 'letter' ? 220 : 110}px"></textarea></label>
+      <label class="f">Signed by${sel('signatory_id', signers.map((p) => [p.id, `${p.name}, ${p.title || (p.kind === 'trustee' ? 'Trustee' : 'Coordinator')}`]), (signers.find((p) => p.kind === 'trustee') || {}).id)}</label>
+      <label class="check"><input type="checkbox" name="send_email" checked><span>Email the recipient a link to the document (if an email is given)</span></label>
+      <div class="bar"><button class="btn btn-primary" type="submit">Issue ${type}</button><span class="muted" style="font-size:.85rem">Issued documents can't be edited. To correct one, revoke it and issue a new one.</span></div></form>`);
+    const f = $('#nd', m.el);
+    const fill = () => {
+      const p = presets[f.preset.value], name = f.recipient_name.value.trim() || '{name}', firstName = name.split(' ')[0];
+      const sub = (t) => String(t || '').replace(/\{name\}/g, name).replace(/\{first\}/g, firstName);
+      f.title.value = p.title; f.body.value = sub(p.body);
+      if (f.subject) f.subject.value = p.subject || ''; if (f.subtitle) f.subtitle.value = p.subtitle || '';
+    };
+    fill();
+    f.preset.onchange = fill;
+    f.recipient_name.onchange = () => { if (/\{name\}|\{first\}/.test(f.body.value)) { const n = f.recipient_name.value.trim(); f.body.value = f.body.value.replace(/\{name\}/g, n).replace(/\{first\}/g, n.split(' ')[0]); } };
+    bindForm(f, async (b) => {
+      if (/\[[^\]]+\]|\{name\}|\{first\}/.test(b.body + b.title + (b.subtitle || '') + (b.subject || '')) && !confirm('Some [placeholders] are still in the text. Issue anyway?')) return;
+      const w = window.open('', '_blank');
+      try {
+        const r = await api('/api/admin/documents', { body: { ...b, type } });
+        if (w) w.location = docLink(r.document);
+        toast(`Issued ${r.document.ref_no}${r.emailed ? ' and emailed' : ''}`); m.close(); refresh();
+      } catch (e) { if (w) w.close(); throw e; }
     });
   }
 
@@ -702,7 +790,7 @@
     const items = [['overview', 'Overview', 'My volunteering'], ['log', 'Log an activity'], ['activities', 'My activities'], ['profile', 'Profile'], ['statement', 'Hours statement'], ['account', 'My account']];
     shell(items, async (v, args, main) => {
       const data = await api('/api/me'); Object.assign(ME, data.user);
-      if (v === 'statement') { location.href = `/portal/certificate.html?u=${ME.id}`; return; }
+      if (v === 'statement') return sStatement(main, args, data);
       return ({ overview: sOverview, log: sLog, activities: sActivities, profile: sProfile, account }[v] || sOverview)(main, args, data);
     });
   }
@@ -748,6 +836,14 @@
       const m = modal(`<h2 style="font-size:1.5rem;margin-bottom:12px">Edit activity</h2>${activityForm(p, a)}`);
       bindForm($('#af', m.el), async (body) => { await api('/api/me/activities/' + a.id, { method: 'PUT', body }); toast('Resubmitted'); m.close(); sActivities(main, [], { profile: p, activities: (await api('/api/me')).activities }); });
     }));
+  }
+
+  async function sStatement(main, _a, { totals }) {
+    main.innerHTML = top('Hours statement') + `<div class="panel" style="max-width:760px"><p>Your official statement lists every activity a coordinator has verified, on the foundation's letterhead, with a reference number and a QR code that anyone can check at <strong>/verify</strong>.</p>
+      <div class="bar" style="margin:16px 0"><span class="big-num" style="font-size:2.2rem">${totals.approved}</span><span class="muted">verified hours</span></div>
+      ${totals.approved ? '<button class="btn btn-primary" id="issue">Open my official statement ↗</button><p class="muted" style="font-size:.86rem;margin-top:10px">If your verified hours change, a new numbered statement is issued. Older statements stay valid for the hours they show.</p>' : '<div class="notice">Your statement becomes available once a coordinator verifies at least one activity.</div>'}</div>`;
+    const b = $('#issue', main);
+    if (b) b.onclick = () => openDoc(async () => (await api('/api/me/statement', { body: {} })).document);
   }
 
   function sProfile(main, _a, { profile: p }) {

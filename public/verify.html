@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Verify a document | Superwings Foundation</title>
+<meta name="description" content="Check that a certificate, letter, hours statement or donation receipt issued by Superwings Foundation is genuine.">
+<link rel="canonical" href="https://superwingsfoundation.org/verify">
+<link rel="icon" href="/assets/logo.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Nunito+Sans:opsz,wght@6..12,400;6..12,600;6..12,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/site.css">
+<style>
+  .vgrid{display:grid;grid-template-columns:.9fr 1.1fr;gap:28px;align-items:start}
+  .res{border-radius:var(--radius);padding:28px;border:1px solid var(--line);background:#fff}
+  .res .badge{display:flex;gap:14px;align-items:center;margin-bottom:16px}
+  .res .badge i{flex:none;width:56px;height:56px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:1.7rem;color:#fff}
+  .res.ok{border-color:#bfe5cc;background:#f3fbf6}.res.ok .badge i{background:var(--green)}
+  .res.bad{border-color:#f3c3bd;background:#fff6f5}.res.bad .badge i{background:#b42318}
+  .res h2{font-size:1.6rem;margin:0}
+  .res dl{display:grid;grid-template-columns:150px 1fr;gap:8px 14px;font-size:.96rem;margin:10px 0 18px}
+  .res dt{color:var(--muted)}.res dd{font-weight:700}
+  .how{display:grid;gap:12px;margin-top:20px}
+  .how div{display:flex;gap:12px;align-items:flex-start;font-size:.94rem;color:var(--muted)}
+  .how b{flex:none;width:30px;height:30px;border-radius:10px;background:var(--yellow-soft);display:grid;place-items:center;color:var(--green-deep)}
+  @media (max-width:900px){.vgrid{grid-template-columns:1fr}.res dl{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+  <div class="page-hero"><div class="wrap">
+    <span class="eyebrow">Document verification</span>
+    <h1>Is this document genuine?</h1>
+    <p>Every certificate, letter, hours statement and donation receipt we issue carries a reference number and a verification code. Enter them below, or scan the QR code on the document.</p>
+  </div></div>
+  <section style="padding-top:56px">
+    <div class="wrap vgrid">
+      <div class="card">
+        <form class="form" id="vf" novalidate>
+          <label class="f">Reference number <span class="hint">e.g. SWF/HS/2026-27/0001</span><input name="ref" required autocomplete="off" style="text-transform:uppercase"></label>
+          <label class="f">Verification code <span class="hint">8 characters, printed next to the reference number</span><input name="code" required autocomplete="off" maxlength="12" style="text-transform:uppercase;letter-spacing:.2em;font-family:ui-monospace,monospace"></label>
+          <button class="btn btn-primary" type="submit">Verify document</button>
+        </form>
+        <div class="how">
+          <div><b>1</b><span>Find the reference number and verification code at the bottom of the document.</span></div>
+          <div><b>2</b><span>Enter both above. We check them against our official register.</span></div>
+          <div><b>3</b><span>Compare what you see here with the document you were given. If any detail differs, the document has been altered.</span></div>
+        </div>
+      </div>
+      <div id="out"><div class="res"><h2 style="font-size:1.3rem">Results appear here</h2><p class="muted" style="margin-top:8px">Questions about a document? Write to <a id="mail" href="mailto:contact@superwingsfoundation.org" style="color:var(--green);font-weight:700">contact@superwingsfoundation.org</a>.</p></div></div>
+    </div>
+  </section>
+</main>
+<script src="/assets/config.js"></script>
+<script src="/assets/site.js"></script>
+<script>
+  SW.chrome('');
+  const { esc } = SW, out = document.getElementById('out'), f = document.getElementById('vf');
+  const D = (iso) => SW.fmt(String(iso).length === 10 ? iso + 'T12:00:00+05:30' : iso, { day: 'numeric', month: 'long', year: 'numeric' });
+  function show(r) {
+    const d = r.document, data = d.data || {}, valid = d.status === 'valid';
+    const facts = [['Document', esc(d.title)], ['Type', esc(d.type_label)], ['Reference no.', esc(d.ref_no)], ['Issued to', esc(d.recipient_name)], ['Date of issue', esc(D(d.issued_at))]];
+    if (d.type === 'hours_statement') facts.push(['Verified hours', esc(data.total_hours)], ['Programme', esc(data.programme_label || '')], ['Institution', esc(data.institution || '—')]);
+    if (d.type === 'donation_receipt') facts.push(['Amount', '₹' + Number(data.amount || 0).toLocaleString('en-IN')], ['Mode', esc(data.mode || '')]);
+    if (d.type === 'certificate' && data.subtitle) facts.push(['Details', esc(data.subtitle)]);
+    facts.push(['Signed for the trust by', esc([d.signatory, d.signatory_title].filter(Boolean).join(', '))]);
+    out.innerHTML = `<div class="res ${valid ? 'ok' : 'bad'} fade-in"><div class="badge"><i>${valid ? '✓' : '!'}</i><div><h2>${valid ? 'Authentic document' : 'This document has been revoked'}</h2>
+      <div class="muted" style="font-size:.92rem">${valid ? `Issued by ${esc(r.settings.org_name)} and listed in our official register.` : 'It was issued by us but is no longer valid.' + (d.revoked_reason ? ' Reason: ' + esc(d.revoked_reason) : '')}</div></div></div>
+      <dl>${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+      <a class="btn btn-primary" href="/document?ref=${encodeURIComponent(d.ref_no)}&code=${encodeURIComponent(d.code)}">View the official copy</a></div>`;
+  }
+  function fail(msg) {
+    out.innerHTML = `<div class="res bad fade-in"><div class="badge"><i>✕</i><div><h2>Not verified</h2><div class="muted" style="font-size:.92rem">${esc(msg)}</div></div></div>
+      <p class="muted">If you believe this is a mistake, write to <a href="mailto:contact@superwingsfoundation.org" style="color:var(--green);font-weight:700">contact@superwingsfoundation.org</a> with a photo of the document.</p></div>`;
+  }
+  async function check(ref, code) {
+    out.innerHTML = '<div class="res"><div class="sk sk-line" style="width:60%;height:28px"></div><div class="sk sk-line"></div><div class="sk sk-line" style="width:80%"></div><div class="sk sk-line" style="width:70%"></div></div>';
+    history.replaceState(null, '', `/verify?ref=${encodeURIComponent(ref)}&code=${encodeURIComponent(code)}`);
+    try { show(await SW.api(`/api/verify?ref=${encodeURIComponent(ref)}&code=${encodeURIComponent(code)}`)); }
+    catch (e) { if (e.status === 404 || e.status === 400) fail(e.message); else fail('We could not reach our register just now. Please try again in a minute.'); }
+  }
+  SW.bindForm(f, async (b) => {
+    const ref = b.ref.trim().toUpperCase(), code = b.code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!ref || !code) throw Object.assign(new Error('Enter both the reference number and the verification code.'), { status: 400 });
+    await check(ref, code);
+  });
+  const q = new URLSearchParams(location.search);
+  if (q.get('ref') && q.get('code')) { f.ref.value = q.get('ref'); f.code.value = q.get('code'); check(q.get('ref'), q.get('code')); }
+</script>
+</body>
+</html>

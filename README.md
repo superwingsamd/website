@@ -11,6 +11,7 @@
 - **Volunteer programme:** for General, University service learning, IB Diploma CAS and IBCP Community Engagement. Students have their own sign-in to log hours, CAS strands, learning outcomes and reflections. Coordinators verify the entries, and students can print an hours statement. Universities and schools can apply to partner.
 - **Trustees and coordinators:** shown with photos and messages.
 - **Sign-ins:** for administrators, trustees, coordinators and students.
+- **Official documents on letterhead:** letters, certificates, volunteer hours statements and donation receipts. Each gets an automatic reference number (`SWF/LTR/2026-27/0001`, `SWF/CERT/…`, `SWF/HS/…`, `SWF/RC/…`), an 8-character verification code and a QR code. Anyone can check one at **/verify**, and trustees can revoke a document, which then shows as revoked when checked. Every issued document is listed in the `documents` sheet tab.
 - **Donations:** UPI, QR code and bank details, with numbered email receipts. 12A and 80G text appears once filled in.
 - **Email:** branded HTML for every email. Send from the portal and choose the From address. Bulk sends use a queue, and there is a sent log.
 - **Fast loading:** pages show cached content instantly and refresh in the background. Links you hover over are prefetched. Portal sections swap in only once they are ready, and failures retry quietly without showing an error page.
@@ -66,7 +67,7 @@ Email tokens are stored in **Script Properties**, not in the Sheet, so anyone wh
 ## Working on it locally
 
 ```bash
-npm test          # 69 end-to-end tests of Code.gs in a mock Apps Script runtime (Node 22, no installs)
+npm test          # 82 end-to-end tests of Code.gs in a mock Apps Script runtime (Node 22, no installs)
 npm run preview   # http://localhost:8787: the full site + portal against the mock (setup token is printed)
 LATENCY=600 npm run preview   # same, with Apps Script-like delays to check the soft loading
 API_URL=https://…/exec npm run build   # pre-render event pages + sitemap from the live API

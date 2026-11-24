@@ -65,7 +65,7 @@ ${agenda.length ? `<h2>Agenda</h2><ul>${agenda.map((a) => `<li>${esc(a.start_tim
 }
 
 function sitemap(events) {
-  const pages = [['/', 'weekly', '1.0'], ['/events/', 'daily', '0.9'], ['/volunteer', 'monthly', '0.8'], ['/donate', 'monthly', '0.7']];
+  const pages = [['/', 'weekly', '1.0'], ['/events/', 'daily', '0.9'], ['/volunteer', 'monthly', '0.8'], ['/donate', 'monthly', '0.7'], ['/verify', 'yearly', '0.4']];
   const urls = pages.map(([p, f, pr]) => `  <url><loc>${SITE}${p}</loc><lastmod>${today}</lastmod><changefreq>${f}</changefreq><priority>${pr}</priority></url>`);
   for (const e of events) {
     urls.push(`  <url><loc>${SITE}/events/${esc(e.slug)}/</loc><lastmod>${(e.updated_at || e.created_at || today).slice(0, 10)}</lastmod><changefreq>weekly</changefreq><priority>${e.end_at >= new Date().toISOString() ? '0.8' : '0.5'}</priority>${e.cover_id ? `<image:image><image:loc>${esc(media(e.cover_id, 1200))}</image:loc></image:image>` : ''}</url>`);
@@ -90,4 +90,4 @@ writeFileSync(join(PUB, '404.html'), template.replace('<title>Event | Superwings
 writeFileSync(join(PUB, 'sitemap.xml'), sitemap(events));
 writeFileSync(join(PUB, 'robots.txt'), `User-agent: *\nAllow: /\nDisallow: /portal/\n\nSitemap: ${SITE}/sitemap.xml\n`);
 if (!existsSync(join(PUB, '.nojekyll'))) writeFileSync(join(PUB, '.nojekyll'), '');
-console.log(`Built ${events.length} event page(s), sitemap.xml (${events.length + 4} URLs) and robots.txt.`);
+console.log(`Built ${events.length} event page(s), sitemap.xml (${events.length + 5} URLs) and robots.txt.`);
