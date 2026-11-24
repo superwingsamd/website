@@ -5,7 +5,12 @@ const SW = (() => {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const initials = (n) => String(n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
   const media = (id, w) => (!id ? '' : /^https?:\/\//.test(id) ? id : `https://lh3.googleusercontent.com/d/${encodeURIComponent(id)}${w ? '=w' + w : ''}`);
-  const fmt = (iso, o) => new Intl.DateTimeFormat('en-IN', { timeZone: TZ, ...o }).format(new Date(iso));
+  const fmt = (iso, o) => {
+    let d = new Date(iso);
+    if (isNaN(d.getTime()) && typeof iso === 'string') d = new Date(iso.replace(' ', 'T'));
+    if (isNaN(d.getTime())) return iso ? String(iso) : '';
+    return new Intl.DateTimeFormat('en-IN', { timeZone: TZ, ...o }).format(d);
+  };
   const date = (iso) => fmt(iso, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
   const time = (iso) => fmt(iso, { hour: 'numeric', minute: '2-digit', hour12: true });
   const when = (s, e) => (fmt(s, { dateStyle: 'medium' }) === fmt(e, { dateStyle: 'medium' })

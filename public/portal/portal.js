@@ -22,8 +22,17 @@
     return { el: $('.modal', bg), close };
   }
   const pill = (s) => `<span class="pill ${esc(s)}">${esc(s)}</span>`;
-  const dt = (iso) => (iso ? SW.fmt(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z', { dateStyle: 'medium', timeStyle: 'short' }) : '');
-  const d = (iso) => (iso ? SW.fmt(iso.length === 10 ? iso + 'T12:00:00+05:30' : iso, { dateStyle: 'medium' }) : '');
+  // Dates can arrive as "2026-11-24", "2026-11-24 10:00:00" or full ISO. Never throw on a bad value.
+  const toDate = (v) => {
+    if (!v) return null;
+    const s = String(v).trim();
+    const tries = [/^\d{4}-\d{2}-\d{2}$/.test(s) ? s + 'T12:00:00+05:30' : s, s.replace(' ', 'T'), s.replace(' ', 'T') + 'Z'];
+    for (const t of tries) { const x = new Date(t); if (!isNaN(x.getTime())) return x; }
+    return null;
+  };
+  const fmtSafe = (v, o) => { const x = toDate(v); if (!x) return v ? String(v) : ''; try { return SW.fmt(x.toISOString(), o); } catch { return String(v); } };
+  const dt = (v) => fmtSafe(v, { dateStyle: 'medium', timeStyle: 'short' });
+  const d = (v) => fmtSafe(v, { dateStyle: 'medium' });
   const toInput = (iso) => (iso ? new Date(new Date(iso).getTime() + 5.5 * 3600e3).toISOString().slice(0, 16) : '');
   const fromInput = (v) => (v ? `${v}:00+05:30` : '');
   const sel = (name, opts, val) => `<select name="${name}">${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(val ?? '') ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
@@ -337,7 +346,7 @@
     main.innerHTML = top('Volunteers', `<select id="vs" class="btn light sm">${[['', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']].map(([v, t]) => `<option value="${v}" ${v === status ? 'selected' : ''}>${t}</option>`).join('')}</select>`) +
       `<div class="panel tw">${list.length ? `<table class="t"><thead><tr><th>Volunteer</th><th>Programme</th><th>Institution</th><th>Verified hours</th><th>Status</th><th>Joined</th></tr></thead><tbody>
       ${list.map((v) => `<tr class="click" data-u="${v.user_id}"><td><strong>${esc(v.name)}</strong><br><span class="muted">${esc(v.email)}</span></td><td>${esc(v.programme_label)}</td>
-        <td>${esc(v.partner_name || v.institution || '')}${v.grade ? `<br><span class="muted">${esc(v.grade)}</span>` : ''}</td><td>${v.hours}</td><td>${pill(v.status)}</td><td>${esc(d(v.created_at.replace(' ', 'T') + 'Z'))}</td></tr>`).join('')}
+        <td>${esc(v.partner_name || v.institution || '')}${v.grade ? `<br><span class="muted">${esc(v.grade)}</span>` : ''}</td><td>${v.hours}</td><td>${pill(v.status)}</td><td>${esc(d(v.created_at))}</td></tr>`).join('')}
       </tbody></table>` : '<div class="empty-s">No volunteers here yet. Share <a href="/volunteer#join" target="_blank">the sign-up page</a>.</div>'}</div>`;
     $('#vs').onchange = (e) => (location.hash = 'volunteers' + (e.target.value ? '?s=' + e.target.value : ''));
     main.querySelectorAll('[data-u]').forEach((tr) => (tr.onclick = () => volunteerModal(Number(tr.dataset.u), () => volunteers(main, []))));
@@ -452,7 +461,7 @@
       <div class="stat"><b>${list.filter((x) => x.status === 'pledged').length}</b><span>Awaiting confirmation</span></div><div class="stat"><b>${list.filter((x) => x.status === 'received').length}</b><span>Receipts issued</span></div></div>
       <div class="panel tw">${list.length ? `<table class="t"><thead><tr><th>Donor</th><th>Amount</th><th>Mode / ref</th><th>PAN</th><th>Status</th><th>Receipt</th><th>Date</th></tr></thead><tbody>
       ${list.map((x) => `<tr class="click" data-d="${x.id}"><td><strong>${esc(x.name)}</strong><br><span class="muted">${esc(x.email)}</span></td><td><strong>${inr(x.amount)}</strong>${x.purpose ? `<br><span class="muted">${esc(x.purpose)}</span>` : ''}</td>
-        <td>${esc(x.mode || '')}<br><span class="muted">${esc(x.txn_ref || '')}</span></td><td>${esc(x.pan || '—')}</td><td>${pill(x.status)}</td><td>${esc(x.receipt_no || '')}</td><td>${esc(d((x.received_at || x.created_at.replace(' ', 'T') + 'Z')))}</td></tr>`).join('')}
+        <td>${esc(x.mode || '')}<br><span class="muted">${esc(x.txn_ref || '')}</span></td><td>${esc(x.pan || '—')}</td><td>${pill(x.status)}</td><td>${esc(x.receipt_no || '')}</td><td>${esc(d(x.received_at || x.created_at))}</td></tr>`).join('')}
       </tbody></table>` : '<div class="empty-s">No donations recorded yet.</div>'}</div>`;
     $('#add').onclick = () => {
       const m = modal(`<h2 style="font-size:1.5rem;margin-bottom:12px">Record a donation</h2><form class="form" id="df">
